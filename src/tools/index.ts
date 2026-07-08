@@ -3,6 +3,8 @@ import { z } from "zod";
 import type { Store } from "../storage.js";
 import * as svc from "../service.js";
 import * as pa from "../provider-actions.js";
+import * as launch from "../launch/index.js";
+import { LAUNCH_STACK_ITEMS } from "../launch/types.js";
 import { PROVIDER_IDS } from "../types.js";
 
 /**
@@ -47,6 +49,7 @@ const provider = z.enum([
   "supabase",
   "stripe",
   "railway",
+  "render",
   "namecheap",
   "neon",
   "upstash",
@@ -206,7 +209,8 @@ export function registerTools(server: McpServer, store: Store): void {
       description:
         "Bind a provider resource to a project environment. Examples of `resource`: " +
         "{provider:'github',owner:'your-org',repo:'your-repo'}, {provider:'vercel',projectId:'your-vercel-project'}, " +
-        "{provider:'supabase',projectRef:'your_project_ref'}, {provider:'stripe',mode:'live'}.",
+        "{provider:'supabase',projectRef:'your_project_ref'}, {provider:'stripe',mode:'live'}, " +
+        "{provider:'render',serviceId:'srv-...',ownerId:'tea-...'}.",
       inputSchema: {
         project: optionalNonEmptyString(),
         environment: nonEmptyString("Environment id or name"),
@@ -286,15 +290,15 @@ export function registerTools(server: McpServer, store: Store): void {
     {
       title: "Set app env vars",
       description:
-        "Set multiple environment variables on the mapped Vercel or Railway app under one governed env_change action. " +
+        "Set multiple environment variables on the mapped Vercel, Railway, or Render app under one governed env_change action. " +
         "Values are sent to the target provider but are not included in DashClaw/audit summaries. Production changes require approval by default.",
       inputSchema: {
         project: optionalNonEmptyString(),
         environment: nonEmptyString("Environment id or name"),
-        targetProvider: z.enum(["vercel", "railway"]),
+        targetProvider: z.enum(["vercel", "railway", "render"]),
         vars: z.array(z.object({ key: envVarName("Environment variable name"), value: z.string() })).min(1).max(50),
         target: z.array(z.enum(["production", "preview", "development"])).min(1).optional(),
-        serviceId: optionalNonEmptyString("Optional Railway service id override"),
+        serviceId: optionalNonEmptyString("Optional Railway/Render service id override"),
         skipDeploys: z.boolean().optional(),
       },
     },
@@ -611,7 +615,7 @@ function registerProviderTools(server: McpServer, store: Store): void {
       description:
         "Fetch application/deployment logs for a project environment from the mapped provider(s). " +
         "If `provider` is given, reads that provider only; otherwise reads every mapped provider " +
-        "that supports logs (Vercel + Railway in V0, Vercel prioritized). Returns the resource used, time range, log " +
+        "that supports logs (Vercel + Railway + Render in V0, Vercel prioritized). Returns the resource used, time range, log " +
         "lines, and any API limitation. Reads are allowed everywhere and are audited.",
       inputSchema: {
         project: proj,
@@ -1142,6 +1146,7 @@ function registerProviderTools(server: McpServer, store: Store): void {
         name: optionalNonEmptyString("Project name (Neon generates one if omitted)"),
         region_id: optionalNonEmptyString("Neon region, e.g. aws-us-east-1"),
         pg_version: positiveInt("Postgres major version, e.g. 17").optional(),
+        org_id: optionalNonEmptyString("Neon organization id (required by Neon for org accounts)"),
       },
     },
     guard((a: any) =>
@@ -1151,6 +1156,7 @@ function registerProviderTools(server: McpServer, store: Store): void {
         name: a.name,
         regionId: a.region_id,
         pgVersion: a.pg_version,
+        orgId: a.org_id,
       }),
     ),
   );
@@ -1416,6 +1422,154 @@ function registerProviderTools(server: McpServer, store: Store): void {
       },
     },
     guard((a: any) => pa.clerkCreateRedirectUrl(store, a)),
+  );
+
+  // Render
+  server.registerTool(
+    "list_render_services",
+    {
+      title: "List Render services",
+      description: "List Render services visible to the API key (account/workspace-level, read-only).",
+      inputSchema: {
+        project: proj,
+        environment: env,
+        owner_id: optionalNonEmptyString("Filter by Render workspace owner id"),
+        environment_id: optionalNonEmptyString("Filter by Render environment id"),
+        name: optionalNonEmptyString("Filter by service name"),
+        type: optionalNonEmptyString("Filter by service type"),
+        limit: positiveInt("Max services (default 20)").optional(),
+        cursor: optionalNonEmptyString("Pagination cursor"),
+      },
+    },
+    guard((a: any) =>
+      pa.renderListServices(store, {
+        project: a.project,
+        environment: a.environment,
+        ownerId: a.owner_id,
+        environmentId: a.environment_id,
+        name: a.name,
+        type: a.type,
+        limit: a.limit,
+        cursor: a.cursor,
+      }),
+    ),
+  );
+  server.registerTool(
+    "get_render_service",
+    {
+      title: "Render service",
+      description: "Read the mapped Render service, or pass service_id to inspect a specific service.",
+      inputSchema: {
+        project: proj,
+        environment: env,
+        service_id: optionalNonEmptyString("Override the mapped service id"),
+      },
+    },
+    guard((a: any) =>
+      pa.renderService(store, {
+        project: a.project,
+        environment: a.environment,
+        serviceId: a.service_id,
+      }),
+    ),
+  );
+  server.registerTool(
+    "list_render_deploys",
+    {
+      title: "Render deploys",
+      description: "List recent deploys for the mapped Render service.",
+      inputSchema: {
+        project: proj,
+        environment: env,
+        service_id: optionalNonEmptyString("Override the mapped service id"),
+        limit: positiveInt("Max deploys (default 10)").optional(),
+      },
+    },
+    guard((a: any) =>
+      pa.renderDeploys(store, {
+        project: a.project,
+        environment: a.environment,
+        serviceId: a.service_id,
+        limit: a.limit,
+      }),
+    ),
+  );
+  server.registerTool(
+    "get_render_deploy_logs",
+    {
+      title: "Render deploy logs",
+      description:
+        "Fetch recent logs for the mapped Render service. If deploy_id is omitted, resolves the latest deploy first. " +
+        "Read-only and audited.",
+      inputSchema: {
+        project: proj,
+        environment: env,
+        service_id: optionalNonEmptyString("Override the mapped service id"),
+        deploy_id: optionalNonEmptyString("Deploy to include status for; defaults to latest"),
+        since: optionalNonEmptyString("Only logs after this ISO timestamp"),
+        limit: positiveInt("Max log lines (default 100)").optional(),
+      },
+    },
+    guard((a: any) =>
+      pa.renderDeployLogs(store, {
+        project: a.project,
+        environment: a.environment,
+        serviceId: a.service_id,
+        deployId: a.deploy_id,
+        since: a.since,
+        limit: a.limit,
+      }),
+    ),
+  );
+  server.registerTool(
+    "create_render_deployment",
+    {
+      title: "Create Render deployment",
+      description: "Trigger a deploy of the mapped Render service. PRODUCTION deploys require approval by default.",
+      inputSchema: {
+        project: proj,
+        environment: env,
+        service_id: optionalNonEmptyString("Override the mapped service id"),
+        clear_cache: z.boolean().optional().describe("Clear Render's build cache before deploying"),
+        commit_id: optionalNonEmptyString("Deploy a specific git commit SHA"),
+        image_url: optionalNonEmptyString("Deploy this image URL for image-backed services"),
+        deploy_mode: z.enum(["deploy_only", "build_and_deploy"]).optional(),
+      },
+    },
+    guard((a: any) =>
+      pa.renderCreateDeployment(store, {
+        project: a.project,
+        environment: a.environment,
+        serviceId: a.service_id,
+        clearCache: a.clear_cache,
+        commitId: a.commit_id,
+        imageUrl: a.image_url,
+        deployMode: a.deploy_mode,
+      }),
+    ),
+  );
+  server.registerTool(
+    "set_render_env_var",
+    {
+      title: "Set Render env var",
+      description: "Create/update an environment variable on the mapped Render service. PRODUCTION changes require approval by default.",
+      inputSchema: {
+        project: proj,
+        environment: env,
+        service_id: optionalNonEmptyString("Override the mapped service id"),
+        key: envVarName("Environment variable name"),
+        value: z.string(),
+      },
+    },
+    guard((a: any) =>
+      pa.renderSetEnvVar(store, {
+        project: a.project,
+        environment: a.environment,
+        serviceId: a.service_id,
+        key: a.key,
+        value: a.value,
+      }),
+    ),
   );
 
   // Supabase
@@ -1920,5 +2074,64 @@ function registerProviderTools(server: McpServer, store: Store): void {
       },
     },
     guard((a: any) => pa.twilioCreateCall(store, a)),
+  );
+
+  // --- Launch plans (local tracking; steps run through guarded tools) -----
+
+  server.registerTool(
+    "create_launch",
+    {
+      title: "Create launch",
+      description:
+        "Create a stateful launch plan for a project. The plan is an ordered checklist derived from the declared stack " +
+        "(subset of: domain, vercel, neon, stripe, resend, clerk, upstash, r2, sentry, posthog). Plans track the launch only; " +
+        "each step names the existing guarded tool that performs it and a reality check. Stored locally under .offlocal/launches/.",
+      inputSchema: {
+        project: proj,
+        environment: optionalNonEmptyString('Environment the launch targets (default "production")'),
+        declared_stack: z.array(z.enum(LAUNCH_STACK_ITEMS)).describe('Stack pieces this launch uses, e.g. ["domain","vercel","neon","stripe"]'),
+        domain: optionalNonEmptyString('Domain being launched (required when "domain" is declared)'),
+      },
+    },
+    guard((a: any) => ({ status: "ok", plan: launch.createLaunchPlan(store, a) })),
+  );
+  server.registerTool(
+    "get_launch_status",
+    {
+      title: "Get launch status",
+      description:
+        "Load a launch plan and report done, pending, blocked-on-approval, or failed per step plus the single next action. " +
+        "Completion is verified against provider/local state by audited reads.",
+      inputSchema: {
+        plan_id: nonEmptyString("Launch plan id (launch_*) from create_launch"),
+      },
+    },
+    guard(async (a: { plan_id: string }) => ({ status: "ok", launch: await launch.getLaunchStatus(store, a) })),
+  );
+  server.registerTool(
+    "preflight_launch",
+    {
+      title: "Preflight launch",
+      description:
+        "Run before step 1. Verifies provider tokens are present and valid, mappings are complete, Stripe mode is sane, " +
+        "and Namecheap client IP is whitelisted when relevant. Reads only.",
+      inputSchema: {
+        plan_id: nonEmptyString("Launch plan id (launch_*)"),
+      },
+    },
+    guard(async (a: { plan_id: string }) => ({ status: "ok", preflight: await launch.preflightLaunch(store, a) })),
+  );
+  server.registerTool(
+    "verify_launch",
+    {
+      title: "Verify launch",
+      description:
+        "Run after the last step. Verifies domain reachability, latest deployment READY, required env var names present, " +
+        "Stripe webhook enabled, and email sending domain verified. Reads only.",
+      inputSchema: {
+        plan_id: nonEmptyString("Launch plan id (launch_*)"),
+      },
+    },
+    guard(async (a: { plan_id: string }) => ({ status: "ok", verify: await launch.verifyLaunch(store, a) })),
   );
 }

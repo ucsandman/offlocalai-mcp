@@ -46,7 +46,7 @@ export interface NeonCreatedProject {
 
 export async function createProject(
   token: string,
-  params: { name?: string; regionId?: string; pgVersion?: number } = {},
+  params: { name?: string; regionId?: string; pgVersion?: number; orgId?: string } = {},
 ): Promise<NeonCreatedProject> {
   const data = await httpJson<any>(`${BASE}/projects`, {
     method: "POST",
@@ -56,6 +56,7 @@ export async function createProject(
         name: params.name,
         region_id: params.regionId,
         pg_version: params.pgVersion,
+        org_id: params.orgId,
       },
     }),
   });
@@ -85,5 +86,5 @@ export async function getConnectionUri(
       pooled: params.pooled === undefined ? undefined : String(params.pooled),
     },
   });
-  return { connectionUri: data?.connection_uri };
+  return { connectionUri: data?.uri ?? data?.connection_uri };
 }

@@ -208,6 +208,9 @@ function validateProviderResource(provider: ProviderId, resource: ProviderResour
     case "railway":
       requireNonEmptyString((resource as Partial<{ projectId: unknown }>).projectId, "railway.projectId");
       return;
+    case "render":
+      requireNonEmptyString((resource as Partial<{ serviceId: unknown }>).serviceId, "render.serviceId");
+      return;
     case "upstash":
       requireNonEmptyString((resource as Partial<{ databaseId: unknown }>).databaseId, "upstash.databaseId");
       return;

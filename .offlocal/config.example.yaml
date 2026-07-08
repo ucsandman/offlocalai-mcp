@@ -120,6 +120,9 @@ projects:
           project_id: your-railway-project-id
           environment_id: your-railway-environment-id   # optional
           service_id: your-railway-service-id           # optional
+        render:
+          service_id: your-render-service-id
+          owner_id: your-render-owner-id                # optional; used for logs
     # Optional notes future agent sessions should know. Surfaced in get_project_context.
     memory:
       - environment: production
@@ -137,6 +140,8 @@ policy:
     - vercel.env.write
     - railway.deploy
     - railway.env.write
+    - render.deploy
+    - render.env.write
     - cloudflare_r2.env.write
     - sentry.write
     - clerk.env.write

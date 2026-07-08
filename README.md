@@ -41,7 +41,7 @@ AI coding agent
     → workspace
       → project            (your-project)
         → environment      (staging | production)
-          → provider mappings   (github repo, vercel project, supabase ref, stripe mode, r2 bucket, clerk app)
+          → provider mappings   (github repo, vercel/render service, supabase ref, stripe mode, r2 bucket, clerk app)
             → policy / safety check   (allow | block | approval_required)
               → provider API action
                 → audit log + project memory
@@ -91,7 +91,8 @@ runs it on demand.
       "env": {
         "GITHUB_TOKEN": "ghp_your_token",
         "VERCEL_TOKEN": "your_vercel_token",
-        "RAILWAY_TOKEN": "your_railway_token"
+        "RAILWAY_TOKEN": "your_railway_token",
+        "RENDER_API_KEY": "your_render_api_key"
       }
     }
   }
@@ -123,6 +124,7 @@ env = { GITHUB_TOKEN = "ghp_your_token", VERCEL_TOKEN = "your_vercel_token" }
 | `STRIPE_TEST_SECRET_KEY` | Stripe | `sk_test_...` |
 | `STRIPE_LIVE_SECRET_KEY` | Stripe | `sk_live_...` — only used when policy allows a live write |
 | `RAILWAY_TOKEN` | Railway | Account/workspace token |
+| `RENDER_API_KEY` | Render | API key from Render Account Settings |
 | `NEON_API_KEY` | Neon | API key from console.neon.tech → Account settings → API keys |
 | `UPSTASH_EMAIL` | Upstash | Account email for Developer API Basic auth |
 | `UPSTASH_API_KEY` | Upstash | Developer API key from Account → Management API |
@@ -245,7 +247,7 @@ See [offlocal.ai](https://offlocal.ai).
 **App logs:** `get_app_logs`, `get_vercel_logs`, `get_latest_deployment_logs`
 
 **Env wiring:** `set_app_env_vars`* (bulk set validated env vars on mapped
-Vercel/Railway apps without putting values in DashClaw or audit summaries)
+Vercel/Railway/Render apps without putting values in DashClaw or audit summaries)
 
 **Vercel:** `get_vercel_project_context`, `get_vercel_deployments`,
 `get_vercel_deployment_status`, `get_vercel_deployment_logs`,
@@ -256,6 +258,10 @@ Vercel/Railway apps without putting values in DashClaw or audit summaries)
 **Railway:** `get_railway_project_context`, `get_railway_deployments`,
 `discover_railway_resources`, `get_railway_logs`, `create_railway_deployment`*,
 `set_railway_env_var`*
+
+**Render:** `list_render_services`, `get_render_service`,
+`list_render_deploys`, `get_render_deploy_logs`,
+`create_render_deployment`*, `set_render_env_var`*
 
 **Supabase:** `list_supabase_projects`, `get_supabase_project_context`,
 `get_supabase_logs`, `query_supabase`*, `apply_supabase_migration`*
@@ -368,6 +374,22 @@ DashClaw tools:
 
 ---
 
+## Launch Plans
+
+Launch plans are stateful, local checklists for the launch tail. They track
+progress through existing guarded provider tools and store plan JSON under
+`.offlocal/launches/`; they do not execute provider mutations.
+
+| Tool | Description |
+|---|---|
+| `create_launch` | Create the ordered step checklist for a declared stack |
+| `get_launch_status` | Re-evaluate step status from provider/local state and return the next action |
+| `preflight_launch` | Check tokens, mappings, Stripe mode, and Namecheap IP readiness before spending |
+| `verify_launch` | Verify domain reachability, deployment readiness, env names, webhook, and email domain |
+
+Neon organization accounts can pass `org_id` to `create_neon_project`; no new
+environment variable is required.
+
 ## Fetch app logs
 
 Ask the agent something like *"Use offlocal to fetch the latest staging logs."*
@@ -376,13 +398,13 @@ latest deployment's logs, and the read is written to the audit log.
 
 - `get_app_logs` — generic. Pass `project` + `environment` (and optionally
   `provider`, `deployment_id`, `since`, `limit`). With no `provider` it reads
-  every mapped provider that supports logs (Vercel + Railway in V0, Vercel
-  prioritized).
-- `get_vercel_logs` / `get_railway_logs` — provider-specific. Resolve the latest
+  every mapped provider that supports logs (Vercel + Railway + Render in V0,
+  Vercel prioritized).
+- `get_vercel_logs` / `get_railway_logs` / `get_render_deploy_logs` — provider-specific. Resolve the latest
   deployment when `deployment_id` is omitted; return the deployment
   id/url/status plus logs.
 - `get_latest_deployment_logs` — convenience; latest deployment for the mapped
-  provider (`provider` defaults to Vercel, also accepts `railway`).
+  provider (`provider` defaults to Vercel, also accepts `railway` and `render`).
 
 Log reads are a `read` capability, so they are **allowed by default in every
 environment, including production**. Secrets are redacted from log lines where
@@ -539,7 +561,7 @@ src/
   sql.ts             SQL classification (defense-in-depth)
   service.ts         business logic (used by both MCP tools and CLI)
   provider-actions.ts  guarded provider operations
-  providers/         isolated REST adapters: github, vercel, railway, supabase, stripe, neon, upstash, upstash-qstash, cloudflare-r2, namecheap, sentry, posthog, clerk, resend, twilio
+  providers/         isolated REST adapters: github, vercel, railway, render, supabase, stripe, neon, upstash, upstash-qstash, cloudflare-r2, namecheap, sentry, posthog, clerk, resend, twilio
   tools/index.ts     MCP tool registration
   index.ts           stdio MCP server entry
   cli.ts             offlocal CLI

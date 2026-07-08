@@ -26,6 +26,12 @@ export function resolveStripeKey(mode: "test" | "live"): string {
   return value.trim();
 }
 
+/** Env var names that can satisfy a provider's credential (any one present counts). */
+export function credentialEnvCandidates(provider: string): string[] {
+  if (provider === "stripe") return ["STRIPE_TEST_SECRET_KEY", "STRIPE_LIVE_SECRET_KEY"];
+  return [defaultEnvVar(provider)];
+}
+
 /** Default env var name for a provider's V0 token. */
 export function defaultEnvVar(provider: string): string {
   switch (provider) {
@@ -39,6 +45,8 @@ export function defaultEnvVar(provider: string): string {
       return "STRIPE_TEST_SECRET_KEY";
     case "railway":
       return "RAILWAY_TOKEN";
+    case "render":
+      return "RENDER_API_KEY";
     case "namecheap":
       return "NAMECHEAP_API_KEY";
     case "neon":

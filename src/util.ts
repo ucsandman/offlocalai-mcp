@@ -9,6 +9,16 @@ export function nowIso(): string {
   return new Date().toISOString();
 }
 
+/**
+ * Strip trailing "/" characters with a linear scan. This avoids super-linear
+ * backtracking from trailing-slash regexes on adversarial input.
+ */
+export function stripTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 47) end--;
+  return value.slice(0, end);
+}
+
 /** Turn a display name into a URL/identifier-safe slug. */
 export function slugify(name: string): string {
   return name

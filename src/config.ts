@@ -40,6 +40,7 @@ interface ConfigEnvironment {
   supabase?: { project_ref: string; connection_id?: string };
   stripe?: { mode: "test" | "live"; connection_id?: string };
   railway?: { project_id: string; environment_id?: string; service_id?: string; connection_id?: string };
+  render?: { service_id: string; owner_id?: string; connection_id?: string };
   upstash?: {
     database_id: string;
     api_host?: string;
@@ -195,6 +196,12 @@ function validateEnvironmentConfig(value: unknown, field: string): void {
     requiredString(railway.project_id, `${field}.railway.project_id`);
     optionalString(railway.environment_id, `${field}.railway.environment_id`);
     optionalString(railway.service_id, `${field}.railway.service_id`);
+  }
+
+  const render = validateProviderBlock(value.render, `${field}.render`);
+  if (render) {
+    requiredString(render.service_id, `${field}.render.service_id`);
+    optionalString(render.owner_id, `${field}.render.owner_id`);
   }
 
   const upstash = validateProviderBlock(value.upstash, `${field}.upstash`);
@@ -358,6 +365,7 @@ function tokenToMatch(token: string): { provider?: ProviderId; capability: Capab
     "supabase",
     "stripe",
     "railway",
+    "render",
     "namecheap",
     "neon",
     "upstash",
@@ -426,6 +434,16 @@ function environmentResource(provider: ProviderId, env: ConfigEnvironment): Prov
         projectId: env.railway.project_id,
         environmentId: env.railway.environment_id,
         serviceId: env.railway.service_id,
+      };
+    case "render":
+      if (!env.render) return null;
+      if (!env.render.service_id?.trim()) {
+        throw new OfflocalError("Invalid render service_id in config; expected a non-empty service id.");
+      }
+      return {
+        provider,
+        serviceId: env.render.service_id,
+        ownerId: env.render.owner_id,
       };
     case "upstash":
       if (!env.upstash) return null;
@@ -534,6 +552,8 @@ function environmentConnectionId(provider: ProviderId, env: ConfigEnvironment): 
       return env.stripe?.connection_id;
     case "railway":
       return env.railway?.connection_id;
+    case "render":
+      return env.render?.connection_id;
     case "upstash":
       return env.upstash?.connection_id;
     case "cloudflare_r2":
@@ -563,7 +583,7 @@ export interface SeedResult {
 export function applyConfig(store: Store, config: OfflocalConfig): SeedResult {
   validateConfig(config);
   const result: SeedResult = { createdProjects: [], skippedProjects: [], createdRules: 0 };
-  const providers: ProviderId[] = ["github", "vercel", "supabase", "stripe", "railway", "upstash", "cloudflare_r2", "sentry", "posthog", "resend", "twilio", "clerk"];
+  const providers: ProviderId[] = ["github", "vercel", "supabase", "stripe", "railway", "render", "upstash", "cloudflare_r2", "sentry", "posthog", "resend", "twilio", "clerk"];
 
   for (const [slug, p] of Object.entries(config.projects ?? {})) {
     if (store.data.projects.some((x) => x.slug === slug)) {

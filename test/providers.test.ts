@@ -93,6 +93,7 @@ function providerCalls() {
 
 describe("provider auth defaults", () => {
   it("returns explicit env vars for non-core providers", () => {
+    expect(defaultEnvVar("render")).toBe("RENDER_API_KEY");
     expect(defaultEnvVar("namecheap")).toBe("NAMECHEAP_API_KEY");
     expect(defaultEnvVar("neon")).toBe("NEON_API_KEY");
     expect(defaultEnvVar("twilio")).toBe("TWILIO_AUTH_TOKEN");
@@ -1989,7 +1990,7 @@ describe("Namecheap", () => {
 <Errors/>
 <RequestedCommand>namecheap.domains.dns.getHosts</RequestedCommand>
 <CommandResponse Type="namecheap.domains.dns.getHosts">
-<DomainDNSGetHostsResult Domain="domain1.com" IsUsingOurDNS="true">
+<DomainDNSGetHostsResult Domain="domain1.com" EmailType="FWD" IsUsingOurDNS="true">
 <Host HostId="12" Name="@" Type="A" Address="76.76.21.21" MXPref="10" TTL="1800"/>
 <Host HostId="14" Name="www" Type="CNAME" Address="cname.vercel-dns.com" MXPref="10" TTL="1800"/>
 </DomainDNSGetHostsResult>
@@ -2102,6 +2103,7 @@ describe("Namecheap", () => {
     expect(res.status).toBe("ok");
     expect((res as any).data).toMatchObject({
       domain: "domain1.com",
+      emailType: "FWD",
       records: [
         { name: "@", type: "A", address: "76.76.21.21", ttl: 1800 },
         { name: "www", type: "CNAME", address: "cname.vercel-dns.com", ttl: 1800 },
@@ -2113,10 +2115,30 @@ describe("Namecheap", () => {
     expect(url).toContain("TLD=com");
   });
 
+  it("gets DNS host records when the API returns lowercase host elements", async () => {
+    const store = freshStore();
+    seedAcme(store);
+    const lowercaseXml = GETHOSTS_XML.replace(/<Host /g, "<host ");
+    fetchMock = vi.fn(withDashclawRoute(() => mockXml(lowercaseXml)));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await pa.getDnsRecords(store, { environment: "staging", domain: "domain1.com" });
+
+    expect(res.status).toBe("ok");
+    expect((res as any).data.records).toEqual([
+      expect.objectContaining({ name: "@", type: "A", address: "76.76.21.21", ttl: 1800 }),
+      expect.objectContaining({ name: "www", type: "CNAME", address: "cname.vercel-dns.com", ttl: 1800 }),
+    ]);
+  });
+
   it("sets DNS host records with numbered params and env_change capability", async () => {
     const store = freshStore();
     seedAcme(store);
-    fetchMock = vi.fn(withDashclawRoute(() => mockXml(SETHOSTS_XML)));
+    fetchMock = vi.fn(
+      withDashclawRoute((url: string) =>
+        mockXml(url.includes("Command=namecheap.domains.dns.getHosts") ? GETHOSTS_XML : SETHOSTS_XML),
+      ),
+    );
     vi.stubGlobal("fetch", fetchMock);
 
     const res = await pa.setDnsRecords(store, {
@@ -2129,7 +2151,9 @@ describe("Namecheap", () => {
     });
 
     expect(res.status).toBe("ok");
-    const [url] = providerCalls()[0]!;
+    const urls = providerCalls().map(([u]: [string]) => u);
+    expect(urls[0]).toContain("Command=namecheap.domains.dns.getHosts");
+    const url = urls[1]!;
     expect(url).toContain("Command=namecheap.domains.dns.setHosts");
     expect(url).toContain("HostName1=%40");
     expect(url).toContain("RecordType1=A");
@@ -2137,10 +2161,34 @@ describe("Namecheap", () => {
     expect(url).toContain("HostName2=www");
     expect(url).toContain("RecordType2=CNAME");
     expect(url).toContain("TTL2=300");
+    expect(url).toContain("EmailType=FWD");
     expect(lastAudit(store)).toMatchObject({ tool: "set_dns_records", result: "success" });
     // Capability env_change reaches the DashClaw guard payload.
     const guardBody = fetchMock.mock.calls.find(([u]: [string]) => u === "https://dashclaw.example/api/guard")?.[1]?.body;
     expect(String(guardBody)).toContain('"capability":"env_change"');
+  });
+
+  it("omits EmailType on setHosts when the domain reports none", async () => {
+    const store = freshStore();
+    seedAcme(store);
+    const noEmailTypeXml = GETHOSTS_XML.replace(' EmailType="FWD"', "");
+    fetchMock = vi.fn(
+      withDashclawRoute((url: string) =>
+        mockXml(url.includes("Command=namecheap.domains.dns.getHosts") ? noEmailTypeXml : SETHOSTS_XML),
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await pa.setDnsRecords(store, {
+      environment: "staging",
+      domain: "domain1.com",
+      records: [{ name: "@", type: "A", address: "76.76.21.21" }],
+    });
+
+    expect(res.status).toBe("ok");
+    const urls = providerCalls().map(([u]: [string]) => u);
+    expect(urls[1]).toContain("Command=namecheap.domains.dns.setHosts");
+    expect(urls[1]).not.toContain("EmailType=");
   });
 
   it("requires approval for purchase_domain end-to-end even with an explicit allow policy", async () => {
@@ -2295,12 +2343,12 @@ describe("Neon", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    const res = await pa.neonCreateProject(store, { environment: "staging", name: "acme-db" });
+    const res = await pa.neonCreateProject(store, { environment: "staging", name: "acme-db", orgId: "org-test-123" });
 
     expect(res.status).toBe("ok");
     const [url, init] = providerCalls()[0]!;
     expect(url).toBe("https://console.neon.tech/api/v2/projects");
-    expect(JSON.parse(init.body)).toMatchObject({ project: { name: "acme-db" } });
+    expect(JSON.parse(init.body)).toMatchObject({ project: { name: "acme-db", org_id: "org-test-123" } });
     expect((res as any).data).toMatchObject({
       project: { id: "proj-new", name: "acme-db" },
       branchId: "br-1",
@@ -2313,7 +2361,7 @@ describe("Neon", () => {
   it("returns the connection URI for a project via query params", async () => {
     const store = freshStore();
     seedAcme(store);
-    fetchMock = vi.fn(withDashclawRoute(() => mockOk({ connection_uri: NEON_URI })));
+    fetchMock = vi.fn(withDashclawRoute(() => mockOk({ uri: NEON_URI })));
     vi.stubGlobal("fetch", fetchMock);
 
     const res = await pa.neonGetConnectionUri(store, {
@@ -2337,7 +2385,7 @@ describe("Neon", () => {
     fetchMock = vi.fn(
       withDashclawRoute((url) =>
         url.endsWith("/connection_uri") || url.includes("/connection_uri?")
-          ? mockOk({ connection_uri: NEON_URI })
+          ? mockOk({ uri: NEON_URI })
           : mockOk({
               project: { id: "proj-new", name: "acme-db" },
               branch: { id: "br-1" },
@@ -2986,6 +3034,169 @@ describe("Railway writes", () => {
     mapRailwayTo(store, "staging");
     fetchMock.mockImplementation(withDashclawRoute((url: string, init: any) => routeMutations()(url, init)));
     const res = await pa.railwaySetEnvVar(store, { environment: "staging", key: " ", value: "on" });
+    expect(res.status).toBe("error");
+    expect((res as any).error).toMatch(/key/i);
+    expect(providerCalls()).toHaveLength(0);
+  });
+});
+
+describe("Render logs and writes", () => {
+  const RENDER_LATEST = { id: "dep-1", status: "build_failed", createdAt: "2026-07-08T00:00:00Z" };
+
+  function mapRender(store: Store, environment = "staging") {
+    mapProviderResource(store, {
+      project: "acme-crm",
+      environment,
+      provider: "render",
+      resource: { provider: "render", serviceId: "srv-123", ownerId: "tea-123" },
+    });
+  }
+
+  function routeRender(url: string, init?: RequestInit) {
+    const method = init?.method ?? "GET";
+    if (url.includes("/services/srv-123/deploys?")) {
+      return mockOk([{ deploy: RENDER_LATEST }]);
+    }
+    if (url.includes("/services/srv-123/deploys/dep-1")) {
+      return mockOk(RENDER_LATEST);
+    }
+    if (url.includes("/logs?")) {
+      return mockOk({
+        logs: [
+          { timestamp: "2026-07-08T00:00:01Z", level: "info", message: "Starting service" },
+          { timestamp: "2026-07-08T00:00:02Z", level: "error", message: "Boom: missing DATABASE_URL" },
+        ],
+      });
+    }
+    if (url.endsWith("/services/srv-123/deploys") && method === "POST") {
+      return mockOk({ id: "dep-new", status: "queued" });
+    }
+    if (url.includes("/services/srv-123/env-vars/FEATURE_FLAG") && method === "PUT") {
+      return mockOk({ key: "FEATURE_FLAG", value: "on" });
+    }
+    throw new Error(`Unexpected Render request ${method} ${url}`);
+  }
+
+  beforeEach(() => {
+    process.env.RENDER_API_KEY = "render_dummy";
+  });
+
+  it("get_render_deploy_logs resolves latest deploy and normalizes logs", async () => {
+    const store = freshStore();
+    seedAcme(store);
+    mapRender(store);
+    fetchMock.mockImplementation(async (url: string, init: RequestInit) => routeRender(url, init));
+
+    const res = await pa.renderDeployLogs(store, { environment: "staging" });
+
+    expect(res.status).toBe("ok");
+    const data = (res as any).data;
+    expect(data.resource).toMatchObject({ service_id: "srv-123", deployment_id: "dep-1", deployment_status: "build_failed" });
+    expect(data.logs).toHaveLength(2);
+    expect(data.logs[1]).toMatchObject({ level: "error", message: "Boom: missing DATABASE_URL" });
+    expect(lastAudit(store)).toMatchObject({ result: "success", provider: "render", tool: "get_render_deploy_logs" });
+  });
+
+  it("get_latest_deployment_logs works for provider=render", async () => {
+    const store = freshStore();
+    seedAcme(store);
+    mapRender(store);
+    fetchMock.mockImplementation(async (url: string, init: RequestInit) => routeRender(url, init));
+
+    const res = await pa.latestDeploymentLogs(store, { environment: "staging", provider: "render" });
+
+    expect(res.status).toBe("ok");
+    expect((res as any).data.resource.deployment_id).toBe("dep-1");
+    expect(lastAudit(store)).toMatchObject({ provider: "render", tool: "get_latest_deployment_logs", result: "success" });
+  });
+
+  it("allows and executes a staging deploy", async () => {
+    const store = freshStore();
+    seedAcme(store);
+    mapRender(store);
+    fetchMock.mockImplementation(withDashclawRoute((url: string, init: RequestInit) => routeRender(url, init)));
+
+    const res = await pa.renderCreateDeployment(store, { environment: "staging", clearCache: true });
+
+    expect(res.status).toBe("ok");
+    expect(providerCalls()).toHaveLength(1);
+    expect(JSON.parse((providerCalls()[0]![1] as RequestInit).body as string)).toEqual({ clearCache: "clear" });
+    expect(lastAudit(store)).toMatchObject({ result: "success", provider: "render", tool: "create_render_deployment" });
+  });
+
+  it("requires approval for a production deploy and does NOT execute", async () => {
+    setDashclawDecision("require_approval", "render_prod_deploy");
+    const store = freshStore();
+    seedAcme(store);
+    mapRender(store, "production");
+    fetchMock.mockImplementation(withDashclawRoute((url: string, init: RequestInit) => routeRender(url, init)));
+
+    const res = await pa.renderCreateDeployment(store, { environment: "production" });
+
+    expect(res.status).toBe("approval_required");
+    expect(providerCalls()).toHaveLength(0);
+    expect(lastAudit(store)).toMatchObject({
+      result: "not_executed",
+      provider: "render",
+      policyDecision: "approval_required",
+    });
+  });
+
+  it("allows and executes a staging env var change", async () => {
+    const store = freshStore();
+    seedAcme(store);
+    mapRender(store);
+    fetchMock.mockImplementation(withDashclawRoute((url: string, init: RequestInit) => routeRender(url, init)));
+
+    const res = await pa.renderSetEnvVar(store, { environment: "staging", key: "FEATURE_FLAG", value: "on" });
+
+    expect(res.status).toBe("ok");
+    expect(providerCalls()).toHaveLength(1);
+    expect(JSON.parse((providerCalls()[0]![1] as RequestInit).body as string)).toEqual({ value: "on" });
+  });
+
+  it("sets multiple Render env vars through one governed action", async () => {
+    const store = freshStore();
+    seedAcme(store);
+    mapRender(store);
+    fetchMock.mockImplementation(
+      withDashclawRoute((url: string, init: RequestInit) => {
+        if (url.includes("/services/srv-123/env-vars/DATABASE_URL")) return mockOk({ key: "DATABASE_URL" });
+        if (url.includes("/services/srv-123/env-vars/RESEND_API_KEY")) return mockOk({ key: "RESEND_API_KEY" });
+        return routeRender(url, init);
+      }),
+    );
+
+    const res = await pa.setAppEnvVars(store, {
+      environment: "staging",
+      targetProvider: "render",
+      vars: [
+        { key: "DATABASE_URL", value: "postgres://secret" },
+        { key: "RESEND_API_KEY", value: "re_secret" },
+      ],
+    });
+
+    expect(res.status).toBe("ok");
+    expect((res as any).data).toEqual({
+      targetProvider: "render",
+      count: 2,
+      keys: ["DATABASE_URL", "RESEND_API_KEY"],
+    });
+    expect(providerCalls()).toHaveLength(2);
+    expect(JSON.parse((providerCalls()[0]![1] as RequestInit).body as string)).toEqual({ value: "postgres://secret" });
+    expect(JSON.parse((providerCalls()[1]![1] as RequestInit).body as string)).toEqual({ value: "re_secret" });
+    expect(JSON.stringify(lastAudit(store))).not.toContain("postgres://secret");
+    expect(JSON.stringify(lastAudit(store))).not.toContain("re_secret");
+  });
+
+  it("rejects empty env var keys before calling Render", async () => {
+    const store = freshStore();
+    seedAcme(store);
+    mapRender(store);
+    fetchMock.mockImplementation(withDashclawRoute((url: string, init: RequestInit) => routeRender(url, init)));
+
+    const res = await pa.renderSetEnvVar(store, { environment: "staging", key: " ", value: "on" });
+
     expect(res.status).toBe("error");
     expect((res as any).error).toMatch(/key/i);
     expect(providerCalls()).toHaveLength(0);

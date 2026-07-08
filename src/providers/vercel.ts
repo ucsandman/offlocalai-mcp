@@ -144,6 +144,18 @@ export async function setEnvVar(
   });
 }
 
+export async function listEnvVarNames(
+  token: string,
+  projectId: string,
+  teamId?: string,
+): Promise<string[]> {
+  const data = await httpJson<{ envs?: any[] }>(`${BASE}/v9/projects/${projectId}/env`, {
+    headers: headers(token),
+    query: teamQuery(teamId),
+  });
+  return (data.envs ?? []).map((e: Record<string, any>) => String(e.key));
+}
+
 export interface VercelCreatedProject {
   id: string;
   name: string;

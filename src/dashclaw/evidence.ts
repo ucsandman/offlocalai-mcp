@@ -42,11 +42,19 @@ export function dashclawRecentDecisionsFetch(query: { project?: string; environm
   });
 }
 
+const WIRE_STATUS: Record<DashclawOutcomeInput["status"], string | undefined> = {
+  success: "completed",
+  error: "failed",
+  not_executed: undefined,
+};
+
 export async function recordDashclawOutcome(input: DashclawOutcomeInput): Promise<boolean> {
+  const wireStatus = WIRE_STATUS[input.status];
+  if (!wireStatus) return false;
   await dashclawFetch(`/api/actions/${encodeURIComponent(input.actionId)}/outcome`, {
     method: "POST",
     body: {
-      status: input.status,
+      status: wireStatus,
       duration_ms: input.durationMs,
       summary: input.summary,
       metadata: input.metadata,

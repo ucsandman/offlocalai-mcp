@@ -13,6 +13,7 @@ import * as vc from "./providers/vercel.js";
 import * as sb from "./providers/supabase.js";
 import * as st from "./providers/stripe.js";
 import * as rw from "./providers/railway.js";
+import * as rd from "./providers/render.js";
 import * as ne from "./providers/neon.js";
 import * as us from "./providers/upstash.js";
 import * as qs from "./providers/upstash-qstash.js";
@@ -131,12 +132,12 @@ function assertRecord(name: string, value: Record<string, unknown> | undefined):
   return value;
 }
 
-type AppEnvTargetProvider = "vercel" | "railway";
+type AppEnvTargetProvider = "vercel" | "railway" | "render";
 type AppEnvVarInput = { key: string; value: string };
 
 function assertAppEnvTargetProvider(value: string): AppEnvTargetProvider {
-  if (value !== "vercel" && value !== "railway") {
-    throw new OfflocalError('targetProvider must be one of "vercel" or "railway".');
+  if (value !== "vercel" && value !== "railway" && value !== "render") {
+    throw new OfflocalError('targetProvider must be one of "vercel", "railway", or "render".');
   }
   return value;
 }
@@ -278,6 +279,19 @@ export async function vercelDeployments(
         assertPositiveInteger("limit", input.limit);
         return vc.listDeployments(tokenFor(store, "vercel", r.connectionId), r.projectId, vercelTeamId(store, r.teamId, r.connectionId), input.limit ?? 10);
       },
+  );
+}
+
+/** Env var names on the mapped Vercel project; values are never fetched. */
+export async function vercelListEnvVars(store: Store, input: Base): Promise<GuardedResponse> {
+  const { project, environment } = resolve(store, input);
+  const r = vercelResource(store, project, environment);
+  return runGuarded(
+    store,
+    ctx(project, environment, "vercel", "read", "get_vercel_env_var_names", `env var names ${r.projectId}`, {
+      resourceLabel: r.projectId,
+    }),
+    () => vc.listEnvVarNames(tokenFor(store, "vercel", r.connectionId), r.projectId, vercelTeamId(store, r.teamId, r.connectionId)),
   );
 }
 
@@ -577,7 +591,7 @@ export async function vercelAddDomain(
 // environment (including production) and audited like any other guarded action.
 
 /** Providers that can serve app logs in V0, in priority order (Vercel first). */
-const LOG_PROVIDERS: ProviderId[] = ["vercel", "railway"];
+const LOG_PROVIDERS: ProviderId[] = ["vercel", "railway", "render"];
 
 interface NormalizedLog {
   timestamp: string;
@@ -627,6 +641,12 @@ function normalizeVercelEvent(e: vc.VercelLogEvent): NormalizedLog {
 
 function normalizeRailwayLog(l: rw.RailwayLog): NormalizedLog {
   const sev = (l.severity ?? "").toLowerCase();
+  const level = /err|fatal|crit/.test(sev) ? "error" : /warn/.test(sev) ? "warn" : "info";
+  return { level, timestamp: l.timestamp ?? "", message: redactSecrets(l.message ?? "") };
+}
+
+function normalizeRenderLog(l: rd.RenderLog): NormalizedLog {
+  const sev = (l.level ?? l.type ?? "").toLowerCase();
   const level = /err|fatal|crit/.test(sev) ? "error" : /warn/.test(sev) ? "warn" : "info";
   return { level, timestamp: l.timestamp ?? "", message: redactSecrets(l.message ?? "") };
 }
@@ -1029,6 +1049,26 @@ export async function setAppEnvVars(
     );
   }
 
+  if (targetProvider === "render") {
+    const r = renderResource(store, project, environment);
+    const serviceId = input.serviceId === undefined ? r.serviceId : assertNonEmptyString("serviceId", input.serviceId);
+    const summary = `set ${summaryKeys.length} env vars on ${serviceId}: ${envKeySummary(summaryKeys)}`;
+    return runGuarded(
+      store,
+      ctx(project, environment, "render", "env_change", "set_app_env_vars", summary, {
+        resourceLabel: `${serviceId}:${envKeySummary(summaryKeys)}`,
+      }),
+      async () => {
+        const vars = assertAppEnvVars(input.vars);
+        const keys = vars.map((item) => item.key);
+        for (const item of vars) {
+          await rd.setEnvVar(tokenFor(store, "render", r.connectionId), serviceId, item.key, item.value);
+        }
+        return { targetProvider, count: vars.length, keys };
+      },
+    );
+  }
+
   const r = railwayResource(store, project, environment);
   const summary = `set ${summaryKeys.length} env vars on ${r.projectId}: ${envKeySummary(summaryKeys)}`;
   return runGuarded(
@@ -1177,7 +1217,11 @@ export async function setDnsRecords(
     ctx(project, environment, "namecheap", "env_change", "set_dns_records", `REPLACE all DNS host records for ${domain}`, {
       resourceLabel: domain,
     }),
-    () => nc.setDnsHosts(tokenFor(store, "namecheap"), domain, input.records),
+    async () => {
+      const token = tokenFor(store, "namecheap");
+      const current = await nc.getDnsHosts(token, domain);
+      return nc.setDnsHosts(token, domain, input.records, current.emailType);
+    },
   );
 }
 
@@ -1196,7 +1240,7 @@ export async function neonListProjects(store: Store, input: Base): Promise<Guard
 /** create_neon_project — provision a Neon project (capability "write"). */
 export async function neonCreateProject(
   store: Store,
-  input: Base & { name?: string; regionId?: string; pgVersion?: number },
+  input: Base & { name?: string; regionId?: string; pgVersion?: number; orgId?: string },
 ): Promise<GuardedResponse> {
   const { project, environment } = resolve(store, input);
   const label = input.name ?? "(default name)";
@@ -1210,6 +1254,7 @@ export async function neonCreateProject(
         name: input.name,
         regionId: input.regionId,
         pgVersion: input.pgVersion,
+        orgId: input.orgId,
       }),
   );
 }
@@ -2374,6 +2419,226 @@ export async function twilioCreateCall(
   );
 }
 
+// --- Render ---------------------------------------------------------------
+
+function renderResource(store: Store, project: Project, environment: Environment) {
+  const m = requireMapping(store, project, environment, "render");
+  return { ...(m.resource as { serviceId: string; ownerId?: string; serviceName?: string }), connectionId: m.connectionId };
+}
+
+function renderTarget(
+  store: Store,
+  project: Project,
+  environment: Environment,
+  serviceId?: string,
+): { serviceId: string; ownerId?: string; serviceName?: string; connectionId?: string } {
+  if (serviceId) return { serviceId };
+  return renderResource(store, project, environment);
+}
+
+/** list_render_services — account/workspace-level Render service discovery. */
+export async function renderListServices(
+  store: Store,
+  input: Base & {
+    ownerId?: string;
+    environmentId?: string;
+    name?: string;
+    type?: string;
+    limit?: number;
+    cursor?: string;
+  },
+): Promise<GuardedResponse> {
+  const { project, environment } = resolve(store, input);
+  return runGuarded(
+    store,
+    ctx(project, environment, "render", "read", "list_render_services", "list render services", {
+      resourceLabel: input.ownerId ?? "account",
+    }),
+    () => {
+      assertPositiveInteger("limit", input.limit);
+      return rd.listServices(tokenFor(store, "render"), {
+        ownerId: input.ownerId === undefined ? undefined : assertNonEmptyString("ownerId", input.ownerId),
+        environmentId: input.environmentId === undefined ? undefined : assertNonEmptyString("environmentId", input.environmentId),
+        name: input.name === undefined ? undefined : assertNonEmptyString("name", input.name),
+        type: input.type === undefined ? undefined : assertNonEmptyString("type", input.type),
+        limit: input.limit ?? 20,
+        cursor: input.cursor === undefined ? undefined : assertNonEmptyString("cursor", input.cursor),
+      });
+    },
+  );
+}
+
+/** get_render_service — read a mapped Render service, or an explicit service id. */
+export async function renderService(
+  store: Store,
+  input: Base & { serviceId?: string },
+): Promise<GuardedResponse> {
+  const { project, environment } = resolve(store, input);
+  const r = renderTarget(store, project, environment, input.serviceId);
+  return runGuarded(
+    store,
+    ctx(project, environment, "render", "read", "get_render_service", `service ${r.serviceId}`, {
+      resourceLabel: r.serviceId,
+    }),
+    () => rd.getService(tokenFor(store, "render", r.connectionId), r.serviceId),
+  );
+}
+
+/** list_render_deploys — recent deploys for the mapped Render service. */
+export async function renderDeploys(
+  store: Store,
+  input: Base & { serviceId?: string; limit?: number },
+): Promise<GuardedResponse> {
+  const { project, environment } = resolve(store, input);
+  const r = renderTarget(store, project, environment, input.serviceId);
+  return runGuarded(
+    store,
+    ctx(project, environment, "render", "read", "list_render_deploys", `deploys ${r.serviceId}`, {
+      resourceLabel: r.serviceId,
+    }),
+    () => {
+      assertPositiveInteger("limit", input.limit);
+      return rd.listDeploys(tokenFor(store, "render", r.connectionId), r.serviceId, input.limit ?? 10);
+    },
+  );
+}
+
+/** Resolve the target Render deploy (latest if none given), then fetch recent service logs. */
+async function fetchRenderLogsData(
+  token: string,
+  r: { serviceId: string; ownerId?: string },
+  opts: { deployId?: string; since?: string; limit?: number },
+): Promise<LogResult> {
+  assertPositiveInteger("limit", opts.limit);
+  assertValidSince(opts.since);
+  const limit = opts.limit ?? 100;
+  const time_range = { since: opts.since };
+
+  let deployId = opts.deployId;
+  let deploy_status: string | undefined;
+  let limitation: string | undefined;
+
+  if (!deployId) {
+    const deps = await rd.listDeploys(token, r.serviceId, 1);
+    if (deps.length > 0) {
+      const latest = deps[0]!;
+      deployId = latest.id;
+      deploy_status = latest.status;
+    } else {
+      limitation = "No deploys found for this Render service — returning recent service logs only.";
+    }
+  } else {
+    const deploy = await rd.getDeploy(token, r.serviceId, deployId);
+    deploy_status = deploy.status;
+  }
+
+  const resource = {
+    service_id: r.serviceId,
+    deployment_id: deployId,
+    deployment_status: deploy_status,
+  };
+
+  try {
+    const raw = await rd.getServiceLogs(token, r.serviceId, {
+      ownerId: r.ownerId,
+      startTime: opts.since,
+      limit,
+    });
+    const logs = raw.logs.map(normalizeRenderLog);
+    if (logs.length === 0) {
+      limitation =
+        limitation ??
+        "Render returned no log lines for this service (logs may have expired or the service produced none).";
+    }
+    return { resource, time_range, logs, limitation, audit_written: true };
+  } catch (err) {
+    return {
+      resource,
+      time_range,
+      logs: [],
+      limitation:
+        `Could not fetch Render service logs (${err instanceof Error ? err.message : String(err)}). ` +
+        "Returning the deployment status only.",
+      audit_written: true,
+    };
+  }
+}
+
+/** Shared guarded Render log read; `tool` distinguishes the audited entry. */
+function runRenderLogs(
+  store: Store,
+  input: Base & { serviceId?: string; deployId?: string; since?: string; limit?: number },
+  tool: string,
+): Promise<GuardedResponse> {
+  const { project, environment } = resolve(store, input);
+  const r = renderTarget(store, project, environment, input.serviceId);
+  const label = input.deployId ?? r.serviceId;
+  return runGuarded(
+    store,
+    ctx(project, environment, "render", "read", tool, `logs ${label}`, {
+      resourceLabel: label,
+    }),
+    () =>
+      fetchRenderLogsData(tokenFor(store, "render", r.connectionId), r, {
+        deployId: input.deployId,
+        since: input.since,
+        limit: input.limit,
+      }),
+  );
+}
+
+/** get_render_deploy_logs — Render-specific; resolves latest deploy if none given. */
+export function renderDeployLogs(
+  store: Store,
+  input: Base & { serviceId?: string; deployId?: string; since?: string; limit?: number },
+): Promise<GuardedResponse> {
+  return runRenderLogs(store, input, "get_render_deploy_logs");
+}
+
+/** create_render_deployment — trigger a Render deploy. */
+export async function renderCreateDeployment(
+  store: Store,
+  input: Base & {
+    serviceId?: string;
+    clearCache?: boolean;
+    commitId?: string;
+    imageUrl?: string;
+    deployMode?: "deploy_only" | "build_and_deploy";
+  },
+): Promise<GuardedResponse> {
+  const { project, environment } = resolve(store, input);
+  const r = renderTarget(store, project, environment, input.serviceId);
+  return runGuarded(
+    store,
+    ctx(project, environment, "render", "deploy", "create_render_deployment", `deploy ${r.serviceId}`, {
+      resourceLabel: r.serviceId,
+    }),
+    () =>
+      rd.triggerDeploy(tokenFor(store, "render", r.connectionId), r.serviceId, {
+        clearCache: input.clearCache,
+        commitId: input.commitId === undefined ? undefined : assertNonEmptyString("commitId", input.commitId),
+        imageUrl: input.imageUrl === undefined ? undefined : assertNonEmptyString("imageUrl", input.imageUrl),
+        deployMode: input.deployMode,
+      }),
+  );
+}
+
+/** set_render_env_var — create/update a Render service environment variable. */
+export async function renderSetEnvVar(
+  store: Store,
+  input: Base & { serviceId?: string; key: string; value: string },
+): Promise<GuardedResponse> {
+  const { project, environment } = resolve(store, input);
+  const r = renderTarget(store, project, environment, input.serviceId);
+  return runGuarded(
+    store,
+    ctx(project, environment, "render", "env_change", "set_render_env_var", `set var ${input.key} on ${r.serviceId}`, {
+      resourceLabel: `${r.serviceId}:${input.key}`,
+    }),
+    () => rd.setEnvVar(tokenFor(store, "render", r.connectionId), r.serviceId, assertEnvVarKey("key", input.key), input.value),
+  );
+}
+
 /** get_latest_deployment_logs — convenience; latest deployment for the provider. */
 export async function latestDeploymentLogs(
   store: Store,
@@ -2387,6 +2652,9 @@ export async function latestDeploymentLogs(
   if (provider === "railway") {
     return runRailwayLogs(store, base, "get_latest_deployment_logs");
   }
+  if (provider === "render") {
+    return runRenderLogs(store, base, "get_latest_deployment_logs");
+  }
   // Other providers don't serve deployment logs in V0 — audit the read and
   // return a clear limitation instead of pretending.
   const { project, environment } = resolve(store, input);
@@ -2397,7 +2665,7 @@ export async function latestDeploymentLogs(
       resource: { provider },
       time_range: {},
       logs: [],
-      limitation: `Log fetching for ${provider} is not supported in V0 — only Vercel and Railway logs are available.`,
+      limitation: `Log fetching for ${provider} is not supported in V0 — only Vercel, Railway, and Render logs are available.`,
       audit_written: true,
     }),
   );
@@ -2433,7 +2701,7 @@ export async function appLogs(
       providers: [],
       limitation:
         "No mapped providers support log fetching for this environment. Map a Vercel or " +
-        "Railway project with map_provider_resource, or pass an explicit `provider`.",
+        "Railway or Render service with map_provider_resource, or pass an explicit `provider`.",
     };
   }
 
@@ -2451,6 +2719,13 @@ export async function appLogs(
       providers.push(await runVercelLogs(store, logInput, "get_app_logs"));
     } else if (p === "railway") {
       providers.push(await runRailwayLogs(store, logInput, "get_app_logs"));
+    } else if (p === "render") {
+      providers.push(
+        await runRenderLogs(store, {
+          ...logInput,
+          deployId: input.deploymentId,
+        }, "get_app_logs"),
+      );
     } else {
       providers.push(
         await runGuarded(
@@ -2460,7 +2735,7 @@ export async function appLogs(
             resource: { provider: p },
             time_range: { since: input.since },
             logs: [],
-            limitation: `Log fetching for ${p} is not supported in V0 — only Vercel and Railway logs are available.`,
+            limitation: `Log fetching for ${p} is not supported in V0 — only Vercel, Railway, and Render logs are available.`,
             audit_written: true,
           }),
         ),
@@ -2594,6 +2869,25 @@ export async function stripeListProducts(
     () => {
       assertPositiveInteger("limit", input.limit);
       return st.listProducts(stripeKeyFor(store, environment, mode), input.limit ?? 10);
+    },
+  );
+}
+
+/** Read prices for launch-plan reality checks. Not registered as an MCP tool. */
+export async function stripeListPrices(
+  store: Store,
+  input: Base & { limit?: number },
+): Promise<GuardedResponse> {
+  const { project, environment } = resolve(store, input);
+  const mode = stripeMode(store, environment);
+  return runGuarded(
+    store,
+    ctx(project, environment, "stripe", "read", "list_stripe_prices", `list prices (${mode})`, {
+      resourceLabel: mode,
+    }),
+    () => {
+      assertPositiveInteger("limit", input.limit);
+      return st.listPrices(stripeKeyFor(store, environment, mode), input.limit ?? 10);
     },
   );
 }

@@ -16,6 +16,7 @@ export type ProviderId =
   | "supabase"
   | "stripe"
   | "railway"
+  | "render"
   | "namecheap"
   | "neon"
   | "upstash"
@@ -32,6 +33,7 @@ export const PROVIDER_IDS: ProviderId[] = [
   "supabase",
   "stripe",
   "railway",
+  "render",
   "namecheap",
   "neon",
   "upstash",
@@ -232,12 +234,22 @@ export interface ClerkResource {
   signUpFallbackRedirectUrl?: string;
 }
 
+export interface RenderResource {
+  /** Render service id (srv-...). */
+  serviceId: string;
+  /** Render workspace owner id; needed for log queries and otherwise derived from the service. */
+  ownerId?: string;
+  /** Friendly Render service name, for display only. */
+  serviceName?: string;
+}
+
 export type ProviderResource =
   | ({ provider: "github" } & GithubResource)
   | ({ provider: "vercel" } & VercelResource)
   | ({ provider: "supabase" } & SupabaseResource)
   | ({ provider: "stripe" } & StripeResource)
   | ({ provider: "railway" } & RailwayResource)
+  | ({ provider: "render" } & RenderResource)
   | ({ provider: "upstash" } & UpstashResource)
   | ({ provider: "cloudflare_r2" } & CloudflareR2Resource)
   | ({ provider: "sentry" } & SentryResource)
