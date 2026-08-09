@@ -8,6 +8,11 @@ import type { DashclawDecision, DashclawGuardDecision, DashclawGuardPayload } fr
 
 export function normalizeDashclawDecision(value: unknown): DashclawDecision {
   if (value === "allow") return "allow";
+  // DashClaw's full decision set is allow|warn|block|require_approval. A warn
+  // means proceed-and-log: DashClaw has already recorded the warning signal
+  // server-side, so the gate treats it as allow. Truly unknown values still
+  // fail closed below.
+  if (value === "warn") return "allow";
   if (value === "block") return "block";
   if (value === "require_approval" || value === "approval_required") return "require_approval";
   throw new OfflocalError(`Unknown DashClaw decision "${String(value)}".`);

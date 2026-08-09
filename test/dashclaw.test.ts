@@ -70,6 +70,7 @@ describe("DashClaw client", () => {
 describe("DashClaw decision normalization", () => {
   it.each([
     ["allow", "allow"],
+    ["warn", "allow"],
     ["block", "block"],
     ["require_approval", "require_approval"],
     ["approval_required", "require_approval"],
