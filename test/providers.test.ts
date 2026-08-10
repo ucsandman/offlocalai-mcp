@@ -25,11 +25,16 @@ function mockOk(body: unknown) {
 }
 
 function dashclawRoute(url: string): Response | undefined {
-  if (url === "https://dashclaw.example/api/guard") {
+  if (url === "https://dashclaw.example/api/guard?record=true") {
     return mockOk(dashclawDecision);
   }
   if (url.startsWith("https://dashclaw.example/api/actions/") && url.endsWith("/outcome")) {
     return mockOk({ ok: true });
+  }
+  if (url.startsWith("https://dashclaw.example/api/actions/")) {
+    // GET action status for the approval-convergence rerun path: still parked.
+    const id = url.split("/api/actions/")[1];
+    return mockOk({ action: { id, status: "pending_approval", approved_by: null } });
   }
   return undefined;
 }
@@ -179,7 +184,7 @@ describe("Sentry", () => {
     });
 
     expect(res.status).toBe("ok");
-    const guardBody = String(fetchMock.mock.calls.find(([url]) => url === "https://dashclaw.example/api/guard")?.[1]?.body);
+    const guardBody = String(fetchMock.mock.calls.find(([url]) => url === "https://dashclaw.example/api/guard?record=true")?.[1]?.body);
     expect(guardBody).toContain('"provider":"sentry"');
     expect(guardBody).toContain('"capability":"env_change"');
   });
@@ -258,7 +263,7 @@ describe("Sentry", () => {
     expect(res.status).toBe("ok");
     expect((res as any).data).toMatchObject({ id: "key_123", publicDsn: "https://pub_123@o1.ingest.sentry.io/450" });
     expect(JSON.stringify((res as any).data)).not.toContain("sec_123");
-    const guardBody = String(fetchMock.mock.calls.find(([url]) => url === "https://dashclaw.example/api/guard")?.[1]?.body);
+    const guardBody = String(fetchMock.mock.calls.find(([url]) => url === "https://dashclaw.example/api/guard?record=true")?.[1]?.body);
     expect(guardBody).not.toContain("sec_123");
     expect(JSON.stringify(lastAudit(store))).not.toContain("sec_123");
   });
@@ -330,7 +335,7 @@ describe("Sentry", () => {
 
     expect(res.status).toBe("ok");
     expect((res as any).data).toMatchObject({ version: "acme-api@abc123", projectSlugs: ["acme-api"] });
-    const guardBody = String(fetchMock.mock.calls.find(([url]) => url === "https://dashclaw.example/api/guard")?.[1]?.body);
+    const guardBody = String(fetchMock.mock.calls.find(([url]) => url === "https://dashclaw.example/api/guard?record=true")?.[1]?.body);
     expect(guardBody).toContain('"provider":"sentry"');
     expect(guardBody).toContain('"capability":"write"');
   });
@@ -374,7 +379,7 @@ describe("Sentry", () => {
 
     expect(res.status).toBe("ok");
     expect((res as any).data).toMatchObject({ id: "dep_123", environment: "production", name: "vercel dpl_123" });
-    const guardBody = String(fetchMock.mock.calls.find(([url]) => url === "https://dashclaw.example/api/guard")?.[1]?.body);
+    const guardBody = String(fetchMock.mock.calls.find(([url]) => url === "https://dashclaw.example/api/guard?record=true")?.[1]?.body);
     expect(guardBody).toContain('"provider":"sentry"');
     expect(guardBody).toContain('"capability":"deploy"');
   });
@@ -541,7 +546,7 @@ describe("PostHog", () => {
       NEXT_PUBLIC_POSTHOG_HOST: "https://eu.i.posthog.com",
     });
     expect(JSON.stringify((res as any).data)).not.toContain("phs_secret");
-    const guardBody = String(fetchMock.mock.calls.find(([url]) => url === "https://dashclaw.example/api/guard")?.[1]?.body);
+    const guardBody = String(fetchMock.mock.calls.find(([url]) => url === "https://dashclaw.example/api/guard?record=true")?.[1]?.body);
     expect(guardBody).toContain('"provider":"posthog"');
     expect(guardBody).toContain('"capability":"env_change"');
   });
@@ -632,7 +637,7 @@ describe("PostHog", () => {
 
     expect(res.status).toBe("ok");
     expect((res as any).data).toMatchObject({ id: "7", key: "checkout-v2", active: false });
-    const guardBody = String(fetchMock.mock.calls.find(([url]) => url === "https://dashclaw.example/api/guard")?.[1]?.body);
+    const guardBody = String(fetchMock.mock.calls.find(([url]) => url === "https://dashclaw.example/api/guard?record=true")?.[1]?.body);
     expect(guardBody).toContain('"provider":"posthog"');
     expect(guardBody).toContain('"capability":"write"');
   });
@@ -759,7 +764,7 @@ describe("Upstash Redis", () => {
       UPSTASH_REDIS_REST_TOKEN: "upstash_rest_secret",
       UPSTASH_REDIS_READ_ONLY_REST_TOKEN: "upstash_readonly_secret",
     });
-    const guardBody = String(fetchMock.mock.calls.find(([url]) => url === "https://dashclaw.example/api/guard")?.[1]?.body);
+    const guardBody = String(fetchMock.mock.calls.find(([url]) => url === "https://dashclaw.example/api/guard?record=true")?.[1]?.body);
     expect(guardBody).toContain('"provider":"upstash"');
     expect(guardBody).toContain('"capability":"env_change"');
     expect(guardBody).not.toContain("upstash_rest_secret");
@@ -930,7 +935,7 @@ describe("Upstash Redis", () => {
 
     expect(res.status).toBe("ok");
     expect((res as any).data).toEqual({ scheduleId: "daily-sync" });
-    const guardBody = String(fetchMock.mock.calls.find(([url]) => url === "https://dashclaw.example/api/guard")?.[1]?.body);
+    const guardBody = String(fetchMock.mock.calls.find(([url]) => url === "https://dashclaw.example/api/guard?record=true")?.[1]?.body);
     expect(guardBody).toContain('"provider":"upstash"');
     expect(guardBody).toContain('"capability":"env_change"');
     expect(guardBody).not.toContain("qstash_token_secret");
@@ -1062,7 +1067,7 @@ describe("Cloudflare R2", () => {
         secretAccessKeyEnvVar: "R2_SECRET_ACCESS_KEY",
       },
     });
-    const guardBody = String(fetchMock.mock.calls.find(([url]) => url === "https://dashclaw.example/api/guard")?.[1]?.body);
+    const guardBody = String(fetchMock.mock.calls.find(([url]) => url === "https://dashclaw.example/api/guard?record=true")?.[1]?.body);
     expect(guardBody).toContain('"provider":"cloudflare_r2"');
     expect(guardBody).toContain('"capability":"env_change"');
     expect(guardBody).not.toContain("cf_api_secret");
@@ -1312,7 +1317,7 @@ describe("Clerk", () => {
       url: "my-app://oauth-callback",
       createdAt: 1770489700000,
     });
-    const guardBody = String(fetchMock.mock.calls.find(([url]) => url === "https://dashclaw.example/api/guard")?.[1]?.body);
+    const guardBody = String(fetchMock.mock.calls.find(([url]) => url === "https://dashclaw.example/api/guard?record=true")?.[1]?.body);
     expect(guardBody).toContain('"provider":"clerk"');
     expect(guardBody).toContain('"capability":"env_change"');
     expect(guardBody).not.toContain("sk_test_secret");
@@ -1394,7 +1399,7 @@ describe("Resend", () => {
 
     expect(res.status).toBe("ok");
     expect((res as any).data.records).toEqual([expect.objectContaining({ type: "CNAME", name: "k._domainkey" })]);
-    const guardBody = String(fetchMock.mock.calls.find(([url]) => url === "https://dashclaw.example/api/guard")?.[1]?.body);
+    const guardBody = String(fetchMock.mock.calls.find(([url]) => url === "https://dashclaw.example/api/guard?record=true")?.[1]?.body);
     expect(guardBody).toContain('"provider":"resend"');
     expect(guardBody).toContain('"capability":"env_change"');
   });
@@ -1444,7 +1449,7 @@ describe("Resend", () => {
     });
 
     expect(res.status).toBe("ok");
-    const guardBody = String(fetchMock.mock.calls.find(([url]) => url === "https://dashclaw.example/api/guard")?.[1]?.body);
+    const guardBody = String(fetchMock.mock.calls.find(([url]) => url === "https://dashclaw.example/api/guard?record=true")?.[1]?.body);
     expect(guardBody).toContain('"provider":"resend"');
     expect(guardBody).not.toContain("ada@example.com");
     expect(guardBody).not.toContain("123456");
@@ -1532,7 +1537,7 @@ describe("Twilio", () => {
     });
 
     expect(res.status).toBe("ok");
-    const guardBody = String(fetchMock.mock.calls.find(([url]) => url === "https://dashclaw.example/api/guard")?.[1]?.body);
+    const guardBody = String(fetchMock.mock.calls.find(([url]) => url === "https://dashclaw.example/api/guard?record=true")?.[1]?.body);
     expect(guardBody).toContain('"provider":"twilio"');
     expect(guardBody).toContain('"capability":"env_change"');
   });
@@ -1558,7 +1563,7 @@ describe("Twilio", () => {
     });
 
     expect(res.status).toBe("ok");
-    const guardBody = String(fetchMock.mock.calls.find(([url]) => url === "https://dashclaw.example/api/guard")?.[1]?.body);
+    const guardBody = String(fetchMock.mock.calls.find(([url]) => url === "https://dashclaw.example/api/guard?record=true")?.[1]?.body);
     expect(guardBody).toContain('"provider":"twilio"');
     expect(guardBody).not.toContain("+15559876543");
     expect(guardBody).not.toContain("123456");
@@ -1661,7 +1666,11 @@ describe("Stripe", () => {
       name: "Pro Plan",
     });
     expect(res.status).toBe("approval_required");
-    expect((res as any).approval_id).toBe("act_stripe_live");
+    expect((res as any).approval_id).toMatch(/^approval_/);
+    expect((res as any).dashclaw).toMatchObject({ action_id: "act_stripe_live" });
+    const mirrored = listPendingApprovals(store, { project: "acme-crm" });
+    expect(mirrored).toHaveLength(1);
+    expect(mirrored[0]).toMatchObject({ status: "pending", dashclawActionId: "act_stripe_live" });
     expect(providerCalls()).toHaveLength(0);
     expect(lastAudit(store)).toMatchObject({
       result: "not_executed",
@@ -1916,7 +1925,7 @@ describe("mapped provider connections", () => {
 
     expect(res.status).toBe("ok");
     expect((res as any).data).toEqual({ runId: 101, rerun: true });
-    const guardBody = String(fetchMock.mock.calls.find(([url]) => url === "https://dashclaw.example/api/guard")?.[1]?.body);
+    const guardBody = String(fetchMock.mock.calls.find(([url]) => url === "https://dashclaw.example/api/guard?record=true")?.[1]?.body);
     expect(guardBody).toContain('"provider":"github"');
     expect(guardBody).toContain('"capability":"write"');
     expect(lastAudit(store)).toMatchObject({ result: "success", provider: "github", tool: "rerun_github_workflow_run" });
@@ -1937,7 +1946,7 @@ describe("mapped provider connections", () => {
 
     expect(res.status).toBe("ok");
     expect((res as any).data).toEqual({ runId: 101, canceled: true });
-    const guardBody = String(fetchMock.mock.calls.find(([url]) => url === "https://dashclaw.example/api/guard")?.[1]?.body);
+    const guardBody = String(fetchMock.mock.calls.find(([url]) => url === "https://dashclaw.example/api/guard?record=true")?.[1]?.body);
     expect(guardBody).toContain('"provider":"github"');
     expect(guardBody).toContain('"capability":"write"');
     expect(lastAudit(store)).toMatchObject({ result: "success", provider: "github", tool: "cancel_github_workflow_run" });
@@ -2164,7 +2173,7 @@ describe("Namecheap", () => {
     expect(url).toContain("EmailType=FWD");
     expect(lastAudit(store)).toMatchObject({ tool: "set_dns_records", result: "success" });
     // Capability env_change reaches the DashClaw guard payload.
-    const guardBody = fetchMock.mock.calls.find(([u]: [string]) => u === "https://dashclaw.example/api/guard")?.[1]?.body;
+    const guardBody = fetchMock.mock.calls.find(([u]: [string]) => u === "https://dashclaw.example/api/guard?record=true")?.[1]?.body;
     expect(String(guardBody)).toContain('"capability":"env_change"');
   });
 
@@ -2209,7 +2218,7 @@ describe("Namecheap", () => {
     expect(providerCalls()).toHaveLength(0);
     // The clamped local preview travels to DashClaw: approval_required despite the allow rule.
     const guardBody = String(
-      fetchMock.mock.calls.find(([u]: [string]) => u === "https://dashclaw.example/api/guard")?.[1]?.body,
+      fetchMock.mock.calls.find(([u]: [string]) => u === "https://dashclaw.example/api/guard?record=true")?.[1]?.body,
     );
     expect(guardBody).toContain('"capability":"purchase"');
     expect(guardBody).toContain('"local_policy_effect":"approval_required"');
@@ -2479,7 +2488,7 @@ describe("Vercel", () => {
     expect(JSON.parse(init.body)).toMatchObject({ name: "acme-site", framework: "nextjs" });
     expect((res as any).data).toMatchObject({ id: "prj_new", name: "acme-site" });
     const guardBody = String(
-      fetchMock.mock.calls.find(([u]: [string]) => u === "https://dashclaw.example/api/guard")?.[1]?.body,
+      fetchMock.mock.calls.find(([u]: [string]) => u === "https://dashclaw.example/api/guard?record=true")?.[1]?.body,
     );
     expect(guardBody).toContain('"capability":"write"');
   });
@@ -2545,9 +2554,11 @@ describe("Vercel", () => {
     seedAcme(store);
     const res = await pa.vercelCreateDeployment(store, { environment: "production" });
     expect(res.status).toBe("approval_required");
-    expect((res as any).approval_id).toBe("act_vercel_prod_deploy");
+    expect((res as any).approval_id).toMatch(/^approval_/);
     expect(providerCalls()).toHaveLength(0);
-    expect(listPendingApprovals(store, { project: "acme-crm" })).toHaveLength(0);
+    const mirrored = listPendingApprovals(store, { project: "acme-crm" });
+    expect(mirrored).toHaveLength(1);
+    expect(mirrored[0]).toMatchObject({ status: "pending", dashclawActionId: "act_vercel_prod_deploy" });
   });
 
   it("executes a production deploy when DashClaw allows it", async () => {
@@ -2578,9 +2589,9 @@ describe("Vercel", () => {
 
     const rerun = await pa.vercelCreateDeployment(store, { environment: "production" });
     expect(rerun.status).toBe("approval_required");
-    expect((rerun as any).approval_id).toBe("act_vercel_retry");
+    expect((rerun as any).approval_id).toBe((gated as any).approval_id);
     expect(providerCalls()).toHaveLength(0);
-    expect(listPendingApprovals(store, { project: "acme-crm" })).toHaveLength(0);
+    expect(listPendingApprovals(store, { project: "acme-crm" })).toHaveLength(1);
   });
 
   it("requires approval for production env-var changes", async () => {
@@ -2643,7 +2654,7 @@ describe("Vercel", () => {
       { key: "DATABASE_URL", value: "postgres://secret", type: "encrypted", target: ["preview"] },
       { key: "STRIPE_WEBHOOK_SECRET", value: "whsec_secret", type: "encrypted", target: ["preview"] },
     ]);
-    const guardBody = String(fetchMock.mock.calls.find(([url]) => url === "https://dashclaw.example/api/guard")?.[1]?.body);
+    const guardBody = String(fetchMock.mock.calls.find(([url]) => url === "https://dashclaw.example/api/guard?record=true")?.[1]?.body);
     expect(guardBody).toContain('"tool":"set_app_env_vars"');
     expect(guardBody).toContain('"capability":"env_change"');
     expect(guardBody).not.toContain("postgres://secret");
@@ -3289,7 +3300,7 @@ describe("Stripe webhooks", () => {
     expect(JSON.stringify(res).split(FAKE_WHSEC)).toHaveLength(2);
     // Capability write reaches the DashClaw guard payload.
     const guardBody = String(
-      fetchMock.mock.calls.find(([u]: [string]) => u === "https://dashclaw.example/api/guard")?.[1]?.body,
+      fetchMock.mock.calls.find(([u]: [string]) => u === "https://dashclaw.example/api/guard?record=true")?.[1]?.body,
     );
     expect(guardBody).toContain('"capability":"write"');
   });

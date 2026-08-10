@@ -349,11 +349,26 @@ In this mode, offlocal remains the provider execution layer and DashClaw becomes
 the decision, approval, and evidence authority.
 
 Risky actions are writes, deploys, env-var changes, deletes, destructive SQL, and
-live-mode actions. These actions call DashClaw before execution. If DashClaw
-allows the action, offlocal executes it and records the outcome. If DashClaw
-blocks or requires approval, offlocal does not call the provider. If DashClaw is
-unavailable, risky actions fail closed. Read actions continue through local
-policy and audit.
+live-mode actions. These actions call DashClaw before execution (with
+`?record=true`, so DashClaw creates a real, operator-approvable action). If
+DashClaw allows the action, offlocal executes it and records the outcome. If
+DashClaw blocks or requires approval, offlocal does not call the provider. If
+DashClaw is unavailable, risky actions fail closed. Read actions continue
+through local policy and audit.
+
+**Approval convergence.** When DashClaw parks a risky action as
+`require_approval`, offlocal mirrors the gate as a local pending approval tied
+to the DashClaw action id. Rerunning the same action does NOT open a new gate:
+offlocal reads the original action's state from DashClaw and
+
+- executes exactly once when an operator approved it in the DashClaw UI
+  (operator identity required; API-key approvals never release the gate),
+- returns `blocked` and rejects the mirror when the operator denied it,
+- returns the same `approval_id` while the gate is still pending,
+- fails closed if the action state cannot be read.
+
+`approve_action` refuses DashClaw-backed approvals; the only way to release
+such a gate is an operator approval in DashClaw itself.
 
 Required env vars:
 

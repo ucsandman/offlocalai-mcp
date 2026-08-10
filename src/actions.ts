@@ -1,8 +1,8 @@
 import type { Store } from "./storage.js";
 import { evaluatePolicy } from "./policy.js";
-import { recordDashclawOutcome } from "./dashclaw/evidence.js";
+import { fetchDashclawActionApproval, recordDashclawOutcome } from "./dashclaw/evidence.js";
 import { guardWithDashclaw, isRiskyAction, sanitizeDashclawText } from "./dashclaw/guard.js";
-import type { DashclawGuardDecision } from "./dashclaw/types.js";
+import type { DashclawApprovalState, DashclawGuardDecision } from "./dashclaw/types.js";
 import type { ActionContext, AuditResult, PendingApproval, PolicyEffect, ProviderId } from "./types.js";
 import { newId, nowIso } from "./util.js";
 
@@ -234,6 +234,87 @@ export async function runGuarded(
       }
 
       if (risky) {
+        // Convergence with DashClaw gates: if a prior run of this same action
+        // parked as a DashClaw require_approval, decide from the REMOTE
+        // action's operator-approval state instead of re-guarding (a fresh
+        // guard would open a brand-new gate every rerun and never converge).
+        const mirrored = store.data.pendingApprovals.find(
+          (p) => p.status === "pending" && p.dashclawActionId && approvalMatches(p),
+        );
+        if (mirrored?.dashclawActionId) {
+          const gateActionId = mirrored.dashclawActionId;
+          let approvalState: DashclawApprovalState;
+          try {
+            approvalState = await fetchDashclawActionApproval(gateActionId);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            auditWithDecision("not_executed", "approval_required", `DashClaw approval state unreadable. ${message}`);
+            return {
+              ...base,
+              status: "error",
+              policy_decision: "approval_required",
+              executed: false,
+              error: `DashClaw approval state unreadable; refusing to execute. ${message}`,
+              dashclaw: { action_id: gateActionId, error: message },
+            };
+          }
+
+          if (approvalState === "approved") {
+            store.update((s) => {
+              const current = s.pendingApprovals.find((p) => p.id === mirrored.id);
+              if (!current || current.status !== "pending") {
+                throw new Error(`Approval request "${mirrored.id}" is no longer pending.`);
+              }
+              current.status = "used";
+              current.decidedAt = nowIso();
+              current.usedAt = nowIso();
+              current.decisionNote = `Operator-approved in DashClaw (action ${gateActionId}).`;
+            });
+            dashclawDecision = {
+              decision: "allow",
+              reason: `Operator-approved DashClaw action ${gateActionId}.`,
+              actionId: gateActionId,
+              raw: {},
+            };
+            return executeAllowed(`Operator-approved DashClaw action ${gateActionId}.`);
+          }
+
+          if (approvalState === "denied") {
+            store.update((s) => {
+              const current = s.pendingApprovals.find((p) => p.id === mirrored.id);
+              if (current && current.status === "pending") {
+                current.status = "rejected";
+                current.decidedAt = nowIso();
+                current.decisionNote = `Denied in DashClaw (action ${gateActionId}).`;
+              }
+            });
+            auditWithDecision("not_executed", "block");
+            return {
+              ...base,
+              status: "blocked",
+              policy_decision: "block",
+              executed: false,
+              reason: `DashClaw action ${gateActionId} was denied by the operator.`,
+              suggested_next_step: "The operator denied this action in DashClaw. Do not retry without new instructions.",
+              dashclaw: { action_id: gateActionId },
+            };
+          }
+
+          auditWithDecision("not_executed", "approval_required");
+          return {
+            ...base,
+            status: "approval_required",
+            policy_decision: "approval_required",
+            executed: false,
+            approval_id: mirrored.id,
+            reason: mirrored.reason,
+            suggested_next_step:
+              `DashClaw action ${gateActionId} is still awaiting operator approval. ` +
+              "Approve it in the DashClaw approvals UI, then rerun this action.",
+            dashclaw: { action_id: gateActionId },
+          };
+        }
+
         const startedAt = Date.now();
         try {
           dashclawDecision = await guardWithDashclaw(store, ctx, auditCorrelationId);
@@ -279,16 +360,40 @@ export async function runGuarded(
 
         if (dashclawDecision.decision === "require_approval") {
           auditWithDecision("not_executed", "approval_required");
-          const { outcomeRecorded, outcomeError } = await recordOutcomeSafely("not_executed", startedAt, dashclawDecision.reason);
+          // Mirror the DashClaw gate locally so reruns can find it and decide
+          // from the remote action's approval state (see convergence above).
+          const gateActionId = dashclawDecision.actionId;
+          let approval: PendingApproval | undefined;
+          if (gateActionId) {
+            store.update((s) => {
+              approval = {
+                id: newId("approval"),
+                projectId: ctx.project.id,
+                environmentId: ctx.environment.id,
+                provider: ctx.provider,
+                capability: ctx.capability,
+                tool: ctx.tool,
+                actionSummary: ctx.summary,
+                reason: dashclawDecision!.reason,
+                providerResource: ctx.resourceLabel,
+                status: "pending",
+                createdAt: nowIso(),
+                dashclawActionId: gateActionId,
+              };
+              s.pendingApprovals.push(approval);
+            });
+          }
           return {
             ...base,
             status: "approval_required",
             policy_decision: "approval_required",
             executed: false,
-            approval_id: dashclawDecision.actionId ?? dashclawDecision.decisionId ?? "dashclaw",
+            approval_id: approval?.id ?? dashclawDecision.actionId ?? dashclawDecision.decisionId ?? "dashclaw",
             reason: dashclawDecision.reason,
-            suggested_next_step: "DashClaw requires approval. Use DashClaw approval tooling, then rerun the original action.",
-            dashclaw: { ...dashclawMeta(), outcome_recorded: outcomeRecorded, error: outcomeError },
+            suggested_next_step: gateActionId
+              ? `Approve DashClaw action ${gateActionId} in the DashClaw approvals UI, then rerun the original action.`
+              : "DashClaw requires approval. Use DashClaw approval tooling, then rerun the original action.",
+            dashclaw: dashclawMeta(),
           };
         }
 

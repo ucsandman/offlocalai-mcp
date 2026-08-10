@@ -89,6 +89,8 @@ export function buildDashclawGuardPayload(
 ): DashclawGuardPayload {
   return {
     action_type: actionType(ctx),
+    agent_id: "offlocal-mcp",
+    agent_name: "OffLocal MCP",
     declared_goal: sanitizeDashclawText(ctx.summary),
     systems_touched: systemsTouched(ctx),
     reversible: isReversible(ctx),
@@ -132,7 +134,13 @@ export async function guardWithDashclaw(
   auditCorrelationId = newId("audit"),
 ): Promise<DashclawGuardDecision> {
   const payload = buildDashclawGuardPayload(ctx, localPolicyPreview(store, ctx), auditCorrelationId);
-  const raw = await dashclawFetch<Record<string, unknown>>("/api/guard", { method: "POST", body: payload });
+  // record=true makes DashClaw create a real action row in the same call, so
+  // require_approval gates are operator-approvable and outcomes recordable.
+  const raw = await dashclawFetch<Record<string, unknown>>("/api/guard", {
+    method: "POST",
+    body: payload,
+    query: { record: "true" },
+  });
   const result = objectValue(raw, "result");
   const reasons = objectValue(raw, "reasons");
   const decision = normalizeDashclawDecision(objectValue(raw, "decision") ?? objectValue(raw, "status") ?? objectValue(result, "decision"));

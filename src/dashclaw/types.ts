@@ -9,12 +9,20 @@ export interface DashclawConfig {
 
 export interface DashclawGuardPayload {
   action_type: string;
+  // agent_id + declared_goal are what DashClaw's ?record=true path requires to
+  // create a real, operator-approvable action row (instead of a bare guard
+  // decision whose act_gd_* id has no /api/actions presence).
+  agent_id: string;
+  agent_name: string;
   declared_goal: string;
   systems_touched: string[];
   reversible: boolean;
   risk_score: number;
   metadata: Record<string, unknown>;
 }
+
+/** Operator-approval state of a recorded DashClaw action. */
+export type DashclawApprovalState = "pending" | "approved" | "denied";
 
 export interface DashclawGuardDecision {
   decision: DashclawDecision;

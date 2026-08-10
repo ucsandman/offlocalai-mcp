@@ -127,6 +127,13 @@ describe("DashClaw guard payload mapping", () => {
     expect(isRiskyAction(actionContext({ capability: "read", live: true }))).toBe(true);
   });
 
+  it("identifies the agent so DashClaw can create a recordable action", () => {
+    const payload = buildDashclawGuardPayload(actionContext(), localPreview, "audit_123");
+
+    expect(payload.agent_id).toBe("offlocal-mcp");
+    expect(payload.agent_name).toBe("OffLocal MCP");
+  });
+
   it("builds domain purchase guard payload with irreversible high-risk classification", () => {
     const payload = buildDashclawGuardPayload(
       actionContext({
@@ -242,7 +249,7 @@ describe("DashClaw guard payload mapping", () => {
     const decision = await guardWithDashclaw(store, actionContext(), "audit_123");
 
     expect(fetch).toHaveBeenCalledWith(
-      "https://dashclaw.example/api/guard",
+      "https://dashclaw.example/api/guard?record=true",
       expect.objectContaining({
         method: "POST",
         body: expect.stringContaining('"audit_correlation_id":"audit_123"'),

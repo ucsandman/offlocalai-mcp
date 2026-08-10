@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runGuarded } from "../src/actions.js";
+import { approveAction } from "../src/service.js";
 import { resolveEnvironment, resolveProject } from "../src/resolve.js";
 import { freshStore, seedAcme } from "./helpers.js";
 
@@ -24,7 +25,7 @@ describe("runGuarded invariants", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string) => {
-        if (url.endsWith("/api/guard")) {
+        if (url.includes("/api/guard")) {
           return new Response(
             JSON.stringify({ decision: "block", reason: "destructive SQL blocked", decision_id: "gd_block", action_id: "act_block" }),
             { status: 200 },
@@ -123,7 +124,7 @@ describe("runGuarded DashClaw authoritative mode", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string, init?: RequestInit) => {
-        if (url.endsWith("/api/guard")) {
+        if (url.includes("/api/guard")) {
           return new Response(JSON.stringify(decision), { status: 200 });
         }
         if (url.includes("/api/actions/") && url.endsWith("/outcome")) {
@@ -140,7 +141,7 @@ describe("runGuarded DashClaw authoritative mode", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string) => {
-        if (url.endsWith("/api/guard")) {
+        if (url.includes("/api/guard")) {
           return new Response(JSON.stringify(decision), { status: 200 });
         }
         if (url.includes("/api/actions/") && url.endsWith("/outcome")) {
@@ -179,7 +180,7 @@ describe("runGuarded DashClaw authoritative mode", () => {
 
     expect(res.status).toBe("ok");
     expect(exec).toHaveBeenCalledTimes(1);
-    expect(fetch).toHaveBeenCalledWith("https://dashclaw.example/api/guard", expect.any(Object));
+    expect(fetch).toHaveBeenCalledWith("https://dashclaw.example/api/guard?record=true", expect.any(Object));
     expect(fetch).toHaveBeenCalledWith("https://dashclaw.example/api/actions/act_1/outcome", expect.any(Object));
     expect(store.readAudit()).toHaveLength(1);
     expect(store.readAudit()[0]).toMatchObject({
@@ -292,7 +293,7 @@ describe("runGuarded DashClaw authoritative mode", () => {
     });
   });
 
-  it("returns approval required when DashClaw requires approval without creating local approval", async () => {
+  it("mirrors a DashClaw require_approval as a local pending approval carrying the action id", async () => {
     enableDashclaw({ decision: "require_approval", reason: "human review", decision_id: "gd_3", action_id: "act_3" });
     const { store, ctx } = productionDeployContext();
     const exec = vi.fn(async () => ({ deploymentId: "dpl_1" }));
@@ -302,7 +303,9 @@ describe("runGuarded DashClaw authoritative mode", () => {
     expect(res.status).toBe("approval_required");
     expect(exec).not.toHaveBeenCalled();
     expect(store.readAudit()).toHaveLength(1);
-    expect(store.data.pendingApprovals).toHaveLength(0);
+    expect(store.data.pendingApprovals).toHaveLength(1);
+    expect(store.data.pendingApprovals[0]).toMatchObject({ status: "pending", dashclawActionId: "act_3" });
+    expect((res as any).approval_id).toBe(store.data.pendingApprovals[0].id);
     expect((res as any).dashclaw).toMatchObject({ decision_id: "gd_3", action_id: "act_3" });
   });
 
@@ -386,5 +389,165 @@ describe("runGuarded DashClaw authoritative mode", () => {
     expect(res.status).toBe("ok");
     expect(exec).toHaveBeenCalledTimes(1);
     expect(store.readAudit()).toHaveLength(1);
+  });
+});
+
+describe("runGuarded DashClaw approval convergence", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete process.env.DASHCLAW_BASE_URL;
+    delete process.env.DASHCLAW_API_KEY;
+  });
+
+  function productionDeployContext() {
+    const store = freshStore();
+    seedAcme(store);
+    const project = resolveProject(store, "acme-crm");
+    const environment = resolveEnvironment(store, project, "production");
+    return {
+      store,
+      ctx: {
+        project,
+        environment,
+        provider: "vercel" as const,
+        capability: "deploy" as const,
+        tool: "create_vercel_deployment",
+        summary: "deploy acme production",
+        resourceLabel: "acme-prod",
+      },
+    };
+  }
+
+  /**
+   * Stub a DashClaw whose guard parks the action as pending_approval and whose
+   * GET /api/actions/:id reflects the mutable `remote` record — the flow an
+   * operator drives from the DashClaw approvals UI.
+   */
+  function enableDashclawGate(remote: { status: string; approved_by: string | null }) {
+    process.env.DASHCLAW_BASE_URL = "https://dashclaw.example";
+    process.env.DASHCLAW_API_KEY = "dc_key";
+    const guardCalls = { count: 0 };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.includes("/api/guard")) {
+          guardCalls.count += 1;
+          return new Response(
+            JSON.stringify({
+              decision: "require_approval",
+              reason: "calibration gate",
+              decision_id: "gd_real",
+              action_id: "act_real_1",
+              recorded: true,
+            }),
+            { status: 200 },
+          );
+        }
+        if (url.endsWith("/api/actions/act_real_1") && (init?.method ?? "GET") === "GET") {
+          return new Response(JSON.stringify({ action: { id: "act_real_1", ...remote } }), { status: 200 });
+        }
+        if (url.endsWith("/api/actions/act_real_1/outcome")) {
+          return new Response(JSON.stringify({ ok: true }), { status: 200 });
+        }
+        return new Response(JSON.stringify({ error: "unexpected route", url }), { status: 404 });
+      }),
+    );
+    return guardCalls;
+  }
+
+  it("rerun while the gate is still pending returns the same approval without a new guard call", async () => {
+    const remote = { status: "pending_approval", approved_by: null };
+    const guardCalls = enableDashclawGate(remote);
+    const { store, ctx } = productionDeployContext();
+    const exec = vi.fn(async () => ({ deploymentId: "dpl_1" }));
+
+    const first = await runGuarded(store, ctx, exec);
+    const second = await runGuarded(store, ctx, exec);
+
+    expect(first.status).toBe("approval_required");
+    expect(second.status).toBe("approval_required");
+    expect((second as any).approval_id).toBe((first as any).approval_id);
+    expect(store.data.pendingApprovals).toHaveLength(1);
+    expect(guardCalls.count).toBe(1);
+    expect(exec).not.toHaveBeenCalled();
+  });
+
+  it("rerun executes exactly once after the operator approves the DashClaw action", async () => {
+    const remote = { status: "pending_approval", approved_by: null as string | null };
+    const guardCalls = enableDashclawGate(remote);
+    const { store, ctx } = productionDeployContext();
+    const exec = vi.fn(async () => ({ deploymentId: "dpl_1" }));
+
+    const first = await runGuarded(store, ctx, exec);
+    remote.status = "running";
+    remote.approved_by = "usr_wes";
+    const second = await runGuarded(store, ctx, exec);
+
+    expect(first.status).toBe("approval_required");
+    expect(second.status).toBe("ok");
+    expect(exec).toHaveBeenCalledTimes(1);
+    expect(guardCalls.count).toBe(1);
+    expect(store.data.pendingApprovals[0]).toMatchObject({ status: "used", dashclawActionId: "act_real_1" });
+    const outcomeCall = (fetch as any).mock.calls.find(([url]: [string]) => url.endsWith("/api/actions/act_real_1/outcome"));
+    expect(outcomeCall).toBeDefined();
+    expect(JSON.parse(outcomeCall[1].body).status).toBe("completed");
+  });
+
+  it("an approval without an operator identity does not release the gate", async () => {
+    const remote = { status: "running", approved_by: null };
+    enableDashclawGate({ status: "pending_approval", approved_by: null });
+    const { store, ctx } = productionDeployContext();
+    const exec = vi.fn(async () => ({ deploymentId: "dpl_1" }));
+    await runGuarded(store, ctx, exec);
+
+    enableDashclawGate(remote);
+    const second = await runGuarded(store, ctx, exec);
+
+    expect(second.status).toBe("approval_required");
+    expect(exec).not.toHaveBeenCalled();
+    expect(store.data.pendingApprovals[0].status).toBe("pending");
+  });
+
+  it("rerun after operator denial blocks and rejects the local approval", async () => {
+    const remote = { status: "pending_approval", approved_by: null as string | null };
+    enableDashclawGate(remote);
+    const { store, ctx } = productionDeployContext();
+    const exec = vi.fn(async () => ({ deploymentId: "dpl_1" }));
+
+    await runGuarded(store, ctx, exec);
+    remote.status = "failed";
+    const second = await runGuarded(store, ctx, exec);
+
+    expect(second.status).toBe("blocked");
+    expect(exec).not.toHaveBeenCalled();
+    expect(store.data.pendingApprovals[0].status).toBe("rejected");
+  });
+
+  it("fails closed when the DashClaw action status cannot be read", async () => {
+    enableDashclawGate({ status: "pending_approval", approved_by: null });
+    const { store, ctx } = productionDeployContext();
+    const exec = vi.fn(async () => ({ deploymentId: "dpl_1" }));
+    await runGuarded(store, ctx, exec);
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => new Response(JSON.stringify({ error: "down", url }), { status: 503, statusText: "Service Unavailable" })),
+    );
+    const second = await runGuarded(store, ctx, exec);
+
+    expect(second.status).toBe("error");
+    expect(second.executed).toBe(false);
+    expect(exec).not.toHaveBeenCalled();
+    expect(store.data.pendingApprovals[0].status).toBe("pending");
+  });
+
+  it("approve_action refuses DashClaw-backed approvals", async () => {
+    enableDashclawGate({ status: "pending_approval", approved_by: null });
+    const { store, ctx } = productionDeployContext();
+    await runGuarded(store, ctx, vi.fn(async () => ({ ok: true })));
+    const approvalId = store.data.pendingApprovals[0].id;
+
+    expect(() => approveAction(store, { approvalId })).toThrow(/DashClaw/);
+    expect(store.data.pendingApprovals[0].status).toBe("pending");
   });
 });

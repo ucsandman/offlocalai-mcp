@@ -354,6 +354,12 @@ export interface PendingApproval {
   decidedAt?: string;
   usedAt?: string;
   decisionNote?: string;
+  /**
+   * Set when this approval mirrors a DashClaw require_approval gate. Such
+   * approvals are decided in DashClaw (operator UI), never via approve_action;
+   * reruns verify the remote action's approval state before executing.
+   */
+  dashclawActionId?: string;
 }
 
 // ---------------------------------------------------------------------------

@@ -605,6 +605,12 @@ export function approveAction(
   input: { approvalId: string; note?: string },
 ): { approval: PendingApproval } {
   const approval = requirePendingApproval(store, input.approvalId);
+  if (approval.dashclawActionId) {
+    throw new OfflocalError(
+      `Approval "${approval.id}" mirrors DashClaw action ${approval.dashclawActionId} and can only be ` +
+        "approved by an operator in the DashClaw approvals UI. Once approved there, rerun the original action.",
+    );
+  }
   const note = input.note?.trim();
   if (input.note !== undefined && !note) {
     throw new OfflocalError("Approval note must be non-empty when provided.");

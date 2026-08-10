@@ -1,5 +1,26 @@
 import { dashclawConfigFromEnv, dashclawFetch } from "./client.js";
-import type { DashclawOutcomeInput, DashclawStatusReport } from "./types.js";
+import type { DashclawApprovalState, DashclawOutcomeInput, DashclawStatusReport } from "./types.js";
+
+const DENIED_ACTION_STATUSES = new Set(["failed", "denied", "rejected", "expired", "cancelled", "canceled"]);
+
+/**
+ * Operator-approval state of a recorded DashClaw action (the gate-drainer
+ * rule): approved means an operator identity is stamped on the action AND the
+ * action left pending_approval without landing in a denied status. Approvals
+ * without approved_by (e.g. API-key writes) never release the gate.
+ */
+export async function fetchDashclawActionApproval(actionId: string): Promise<DashclawApprovalState> {
+  const raw = await dashclawFetch<Record<string, unknown>>(`/api/actions/${encodeURIComponent(actionId)}`);
+  const action = (typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>).action : undefined) as
+    | Record<string, unknown>
+    | undefined;
+  const status = typeof action?.status === "string" ? action.status : "";
+  const approvedBy = action?.approved_by;
+  if (DENIED_ACTION_STATUSES.has(status)) return "denied";
+  if (status === "pending_approval") return "pending";
+  if (typeof approvedBy === "string" && approvedBy.length > 0) return "approved";
+  return "pending";
+}
 
 export async function dashclawStatusReport(): Promise<DashclawStatusReport> {
   let config;
