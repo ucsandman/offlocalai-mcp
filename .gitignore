@@ -18,3 +18,9 @@ dist/
 Thumbs.db
 .idea/
 .vscode/
+
+# Agent tooling state (local only)
+.dashclaw-local/
+.repowise/
+.supergoal/
+.supergoal-archive-*/
