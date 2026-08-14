@@ -1233,7 +1233,7 @@ export async function neonListProjects(store: Store, input: Base): Promise<Guard
   return runGuarded(
     store,
     ctx(project, environment, "neon", "read", "list_neon_projects", "list Neon projects"),
-    () => ne.listProjects(tokenFor(store, "neon")),
+    () => ne.listProjects(tokenFor(store, "neon"), process.env.OFFLOCAL_NEON_ORG_ID),
   );
 }
 

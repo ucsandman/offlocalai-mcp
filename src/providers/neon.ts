@@ -32,8 +32,10 @@ function mapProject(p: Record<string, any>): NeonProject {
   };
 }
 
-export async function listProjects(token: string): Promise<NeonProject[]> {
-  const data = await httpJson<any>(`${BASE}/projects`, { headers: headers(token) });
+export async function listProjects(token: string, orgId?: string): Promise<NeonProject[]> {
+  // Org-scoped API keys require org_id on list; personal keys ignore it.
+  const url = orgId ? `${BASE}/projects?org_id=${encodeURIComponent(orgId)}` : `${BASE}/projects`;
+  const data = await httpJson<any>(url, { headers: headers(token) });
   return (data?.projects ?? []).map(mapProject);
 }
 

@@ -2338,6 +2338,25 @@ describe("Neon", () => {
     );
   });
 
+  it("passes org_id when OFFLOCAL_NEON_ORG_ID is set (org-scoped API keys require it)", async () => {
+    const store = freshStore();
+    seedAcme(store);
+    vi.stubEnv("OFFLOCAL_NEON_ORG_ID", "org-test-123");
+    fetchMock = vi.fn(withDashclawRoute(() => mockOk({ projects: [] })));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await pa.neonListProjects(store, { environment: "staging" });
+
+    expect(res.status).toBe("ok");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://console.neon.tech/api/v2/projects?org_id=org-test-123",
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: "Bearer neon_dummy" }),
+      }),
+    );
+    vi.unstubAllEnvs();
+  });
+
   it("creates a Neon project with the right body and returns the connection URI exactly once", async () => {
     const store = freshStore();
     seedAcme(store);
