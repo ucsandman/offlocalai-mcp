@@ -171,6 +171,62 @@ describe("runGuarded DashClaw authoritative mode", () => {
     };
   }
 
+  function purchaseContext() {
+    const store = freshStore();
+    seedAcme(store);
+    const project = resolveProject(store, "acme-crm");
+    const environment = resolveEnvironment(store, project, "production");
+    return {
+      store,
+      ctx: {
+        project,
+        environment,
+        provider: "namecheap" as const,
+        capability: "purchase" as const,
+        tool: "purchase_domain",
+        summary: "Purchase domain decodethesheet.com",
+        resourceLabel: "decodethesheet.com",
+      },
+    };
+  }
+
+  // Regression: a real domain purchase executed on a DashClaw `allow` even
+  // though local policy resolved to approval_required (and src/policy.ts clamps
+  // purchase so it can never resolve lower). The local checks sat below the
+  // `if (risky)` branch, which always returns, so they were unreachable for
+  // every non-read capability. Only an unfunded Namecheap balance stopped the
+  // charge. A DashClaw allow must not be sufficient on its own.
+  it("still holds a purchase when DashClaw allows but local policy requires approval", async () => {
+    enableDashclaw({ decision: "allow", reason: "no matching policy", decision_id: "gd_p", action_id: "act_p" });
+    const { store, ctx } = purchaseContext();
+    const exec = vi.fn(async () => ({ domain: "decodethesheet.com" }));
+
+    const res = await runGuarded(store, ctx, exec);
+
+    expect(res.status).toBe("approval_required");
+    expect(res.executed).toBe(false);
+    expect(exec).not.toHaveBeenCalled();
+    expect(store.data.pendingApprovals).toHaveLength(1);
+  });
+
+  it("executes the purchase once a local approval is on file and DashClaw allows", async () => {
+    enableDashclaw({ decision: "allow", reason: "no matching policy", decision_id: "gd_p", action_id: "act_p" });
+    const { store, ctx } = purchaseContext();
+    const exec = vi.fn(async () => ({ domain: "decodethesheet.com" }));
+
+    const held = await runGuarded(store, ctx, exec);
+    expect(held.status).toBe("approval_required");
+
+    store.update((s) => {
+      s.pendingApprovals[0]!.status = "approved";
+    });
+
+    const res = await runGuarded(store, ctx, exec);
+    expect(res.status).toBe("ok");
+    expect(exec).toHaveBeenCalledTimes(1);
+    expect(store.data.pendingApprovals[0]!.status).toBe("used");
+  });
+
   it("allows risky action only after DashClaw allow", async () => {
     enableDashclaw({ decision: "allow", reason: "approved by policy", decision_id: "gd_1", action_id: "act_1" });
     const { store, ctx } = productionDeployContext();

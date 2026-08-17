@@ -233,6 +233,79 @@ export async function runGuarded(
         }
       }
 
+      function localBlock(): GuardedResponse | undefined {
+        if (decision.effect !== "block") return undefined;
+        audit("not_executed");
+        return {
+          ...base,
+          status: "blocked",
+          policy_decision: "block",
+          executed: false,
+          reason: decision.reason,
+          suggested_next_step:
+            "This action is blocked by policy. If it is genuinely safe, add an explicit " +
+            "allow rule with set_policy_rule, then retry.",
+        };
+      }
+
+      // The local approval gate. On the risky path this is consulted only AFTER
+      // DashClaw has declined to gate the action, so one action never costs two
+      // approvals: if DashClaw holds it, the operator approves there; if
+      // DashClaw allows it, this is what still stops a spend. Returns `stop`
+      // when local policy holds the action, or `reason` when an operator
+      // approval already on file clears it.
+      function localApprovalGate(): { stop?: GuardedResponse; reason?: string } {
+        if (decision.effect !== "approval_required") return {};
+
+        const approved = store.data.pendingApprovals.find((p) => p.status === "approved" && approvalMatches(p));
+        if (approved) {
+          store.update((s) => {
+            const current = s.pendingApprovals.find((p) => p.id === approved.id);
+            if (!current || current.status !== "approved") {
+              throw new Error(`Approval request "${approved.id}" is no longer approved.`);
+            }
+            current.status = "used";
+            current.usedAt = nowIso();
+          });
+          return { reason: `Approved by approval request ${approved.id}.` };
+        }
+
+        let approval: PendingApproval | undefined;
+        store.update((s) => {
+          approval = s.pendingApprovals.find((p) => p.status === "pending" && approvalMatches(p));
+          if (!approval) {
+            approval = {
+              id: newId("approval"),
+              projectId: ctx.project.id,
+              environmentId: ctx.environment.id,
+              provider: ctx.provider,
+              capability: ctx.capability,
+              tool: ctx.tool,
+              actionSummary: ctx.summary,
+              reason: decision.reason,
+              providerResource: ctx.resourceLabel,
+              status: "pending",
+              createdAt: nowIso(),
+            };
+            s.pendingApprovals.push(approval);
+          }
+        });
+        audit("not_executed");
+        return {
+          stop: {
+            ...base,
+            status: "approval_required",
+            policy_decision: "approval_required",
+            executed: false,
+            approval_id: approval!.id,
+            reason: decision.reason,
+            suggested_next_step:
+              `Review this request, then call approve_action with approval_id "${approval!.id}" ` +
+              "or reject_action. Approved actions must be rerun; approval never executes a provider call by itself.",
+          },
+        };
+      }
+
       if (risky) {
         // Convergence with DashClaw gates: if a prior run of this same action
         // parked as a DashClaw require_approval, decide from the REMOTE
@@ -397,72 +470,32 @@ export async function runGuarded(
           };
         }
 
+        // DashClaw allowed it. For purchase — and only purchase — local policy
+        // still gets a veto. evaluatePolicy (src/policy.ts) clamps purchase so
+        // it "can never resolve below approval_required, even when an explicit
+        // allow rule matches"; a DashClaw allow is just another allow and must
+        // not lower that floor either. Without this, the external governor is a
+        // single point of failure for every spend: a real domain purchase went
+        // through on a DashClaw allow that missed only because the tool spells
+        // the action "provider_purchase", and an unfunded balance was the only
+        // thing that stopped the charge. Other capabilities keep DashClaw
+        // authoritative, so this adds no approval traffic anywhere else.
+        if (ctx.capability === "purchase") {
+          const blocked = localBlock();
+          if (blocked) return blocked;
+          const gate = localApprovalGate();
+          if (gate.stop) return gate.stop;
+          return executeAllowed(gate.reason ?? dashclawDecision.reason);
+        }
+
         return executeAllowed(dashclawDecision.reason);
       }
 
-      if (decision.effect === "block") {
-        audit("not_executed");
-        return {
-          ...base,
-          status: "blocked",
-          policy_decision: "block",
-          executed: false,
-          reason: decision.reason,
-          suggested_next_step:
-            "This action is blocked by policy. If it is genuinely safe, add an explicit " +
-            "allow rule with set_policy_rule, then retry.",
-        };
-      }
-
-      if (decision.effect === "approval_required") {
-        const approved = store.data.pendingApprovals.find((p) => p.status === "approved" && approvalMatches(p));
-        if (approved) {
-          store.update((s) => {
-            const current = s.pendingApprovals.find((p) => p.id === approved.id);
-            if (!current || current.status !== "approved") {
-              throw new Error(`Approval request "${approved.id}" is no longer approved.`);
-            }
-            current.status = "used";
-            current.usedAt = nowIso();
-          });
-          return executeAllowed(`Approved by approval request ${approved.id}.`);
-        }
-
-        let approval: PendingApproval | undefined;
-        store.update((s) => {
-          approval = s.pendingApprovals.find((p) => p.status === "pending" && approvalMatches(p));
-          if (!approval) {
-            approval = {
-              id: newId("approval"),
-              projectId: ctx.project.id,
-              environmentId: ctx.environment.id,
-              provider: ctx.provider,
-              capability: ctx.capability,
-              tool: ctx.tool,
-              actionSummary: ctx.summary,
-              reason: decision.reason,
-              providerResource: ctx.resourceLabel,
-              status: "pending",
-              createdAt: nowIso(),
-            };
-            s.pendingApprovals.push(approval);
-          }
-        });
-        audit("not_executed");
-        return {
-          ...base,
-          status: "approval_required",
-          policy_decision: "approval_required",
-          executed: false,
-          approval_id: approval!.id,
-          reason: decision.reason,
-          suggested_next_step:
-            `Review this request, then call approve_action with approval_id "${approval!.id}" ` +
-            "or reject_action. Approved actions must be rerun; approval never executes a provider call by itself.",
-        };
-      }
-
-      return executeAllowed(decision.reason);
+      const blocked = localBlock();
+      if (blocked) return blocked;
+      const gate = localApprovalGate();
+      if (gate.stop) return gate.stop;
+      return executeAllowed(gate.reason ?? decision.reason);
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

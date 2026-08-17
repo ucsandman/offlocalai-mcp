@@ -2232,6 +2232,18 @@ describe("Namecheap", () => {
     fetchMock = vi.fn(withDashclawRoute(() => mockXml(CREATE_XML)));
     vi.stubGlobal("fetch", fetchMock);
 
+    // "Approved" has to mean approved. evaluatePolicy clamps purchase to
+    // approval_required and a DashClaw allow does not lower that floor, so the
+    // first call is held and the buy only happens on the rerun. This test used
+    // to assert "ok" on the first call, which passed only because a DashClaw
+    // allow was wrongly sufficient to spend money on its own.
+    const held = await pa.purchaseDomain(store, { environment: "production", domain: "fancy.xyz", years: 1 });
+    expect(held.status).toBe("approval_required");
+    expect(providerCalls()).toHaveLength(0);
+    store.update((s) => {
+      s.pendingApprovals[0]!.status = "approved";
+    });
+
     const res = await pa.purchaseDomain(store, { environment: "production", domain: "fancy.xyz", years: 1 });
 
     expect(res.status).toBe("ok");
