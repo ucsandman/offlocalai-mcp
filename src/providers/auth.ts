@@ -10,7 +10,7 @@ export function resolveToken(connection: ProviderConnection): string {
   const value = process.env[envVar];
   if (!value || value.trim().length === 0) {
     throw new OfflocalError(
-      `Environment variable ${envVar} is not set, but connection "${connection.label}" needs it.`,
+      `Environment variable ${envVar} is not set, but connection "${connection.label}" needs it. Run \`creds resolve\` (fills .env from keys already on this machine) or \`creds mint ${connection.provider}\` before asking a human.`,
     );
   }
   return value.trim();
@@ -21,7 +21,7 @@ export function resolveStripeKey(mode: "test" | "live"): string {
   const envVar = mode === "live" ? "STRIPE_LIVE_SECRET_KEY" : "STRIPE_TEST_SECRET_KEY";
   const value = process.env[envVar];
   if (!value || value.trim().length === 0) {
-    throw new OfflocalError(`Environment variable ${envVar} is not set (Stripe ${mode} mode).`);
+    throw new OfflocalError(`Environment variable ${envVar} is not set (Stripe ${mode} mode). Run \`creds resolve\` or \`creds mint stripe\` before asking a human.`);
   }
   return value.trim();
 }
