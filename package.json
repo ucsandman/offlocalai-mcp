@@ -8,6 +8,13 @@
     "offlocal-mcp": "dist/index.js",
     "offlocal": "dist/cli.js"
   },
+  "exports": {
+    "./policy": {
+      "types": "./dist/policy-core.d.ts",
+      "default": "./dist/policy-core.js"
+    },
+    "./package.json": "./package.json"
+  },
   "files": [
     "dist",
     "docs",
